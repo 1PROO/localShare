@@ -2,6 +2,7 @@
   "name": "workmesh",
   "version": "1.0.0",
   "description": "WorkMesh - Offline-first P2P LAN workspace for team chat and controlled file collaboration",
+  "author": "Ahmed Akram <ahmedakram19@gmail.com>",
   "main": "main.js",
   "private": true,
   "repository": {
@@ -16,11 +17,12 @@
     "test": "node tests/integration.test.js",
     "rebuild": "electron-rebuild -f -v 22.3.27 -w better-sqlite3",
     "generate-icons": "node scripts/generate-icons.js",
-    "dist:win": "npm run generate-icons && npm run build && electron-builder --win nsis",
+    "dist:win": "npm run generate-icons && npm run build && electron-builder --win nsis --x64 --ia32",
     "dist:win:x64": "npm run generate-icons && npm run build && electron-builder --win nsis --x64",
     "dist:win:ia32": "npm run generate-icons && npm run build && electron-builder --win nsis --ia32"
   },
   "dependencies": {
+    "@fontsource/cairo": "^5.3.0",
     "adm-zip": "^0.5.10",
     "archiver": "^5.3.1",
     "better-sqlite3": "8.7.0",

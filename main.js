@@ -117,6 +117,15 @@ if (process.versions && process.versions.electron) {
     nativeImage
   } = require('electron');
 
+  const isWindows7 =
+    process.platform === 'win32' &&
+    typeof os.release === 'function' &&
+    /^6\.1(\.|$)/.test(os.release());
+
+  if (isWindows7) {
+    app.disableHardwareAcceleration();
+  }
+
   const gotSingleInstanceLock = app.requestSingleInstanceLock();
   if (!gotSingleInstanceLock) {
     app.quit();
@@ -126,6 +135,7 @@ if (process.versions && process.versions.electron) {
     const startHidden = process.argv.includes('--hidden');
     let mainWindow = null;
     let tray = null;
+    let lastBalloonChatId = null;
     let isQuitting = false;
     let db = null;
     let meshNetwork = null;
@@ -206,6 +216,12 @@ if (process.versions && process.versions.electron) {
       tray.setToolTip('WorkMesh');
       tray.on('click', () => showAndFocusMainWindow());
       tray.on('double-click', () => showAndFocusMainWindow());
+      tray.on('balloon-click', () => {
+        showAndFocusMainWindow();
+        if (lastBalloonChatId) {
+          sendToRenderer('ui:open-chat', { chatId: lastBalloonChatId });
+        }
+      });
       updateTrayMenu();
     };
 
@@ -273,7 +289,7 @@ if (process.versions && process.versions.electron) {
       }
 
       const iconPath = path.join(__dirname, 'assets', 'icon.png');
-      if (Notification.isSupported()) {
+      if (!isWindows7 && Notification.isSupported()) {
         const notif = new Notification({
           title,
           body: body.slice(0, 140),
@@ -287,7 +303,9 @@ if (process.versions && process.versions.electron) {
         notif.show();
       } else if (tray && process.platform === 'win32') {
         try {
+          lastBalloonChatId = msg.conversation_id;
           tray.displayBalloon({
+            iconType: 'info',
             title,
             content: body.slice(0, 140)
           });

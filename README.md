@@ -12,12 +12,15 @@
 
 ---
 
-## تحميل ملف التثبيت التلقائي (`.exe`) عبر GitHub Releases
+## تحميل ملف التثبيت التلقائي (`.exe`) عبر صفحة المشروع و GitHub Releases
+
+- **صفحة التحميل والشرح الرسمية (GitHub Pages):** **[https://1proo.github.io/localShare/](https://1proo.github.io/localShare/)** *(ثنائية اللغة عربي/إنجليزي ومربوطة تلقائياً بأحدث نسخة في Releases)*.
+- **صفحة الإصدارات المباشرة:** **[Releases](https://github.com/1PROO/localShare/releases)**
 
 عند رفع أي تحديث على الفرع الرئيسي (`main` أو `master`) أو إنشاء وسم (`v*`)، يعمل مسار **GitHub Actions** تلقائياً على:
 1. التحقق من الكود وبناء الواجهة وتشغيل حزمة اختبارات التكامل الـ 13 على Linux.
 2. بناء مثبّت ويندوز الموحّد (`WorkMesh-Setup-<version>.exe` يدعم `x64` و `ia32`) على `windows-2022` مع Node 18 LTS.
-3. نشر ملف التثبيت وبصمة `SHA256SUMS.txt` تلقائياً في قسم **[Releases](https://github.com/1PROO/localShare/releases)**.
+3. نشر ملف التثبيت وبصمة `SHA256SUMS.txt` تلقائياً في قسم **[Releases](https://github.com/1PROO/localShare/releases)** وتحديث صفحة GitHub Pages.
 
 ---
 
