@@ -1,0 +1,9 @@
+.git
+.github
+node_modules
+dist-renderer
+release
+.workmesh_vault
+*.log
+.DS_Store
+Thumbs.db

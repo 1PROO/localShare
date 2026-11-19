@@ -1,0 +1,100 @@
+{
+  "name": "workmesh",
+  "version": "1.0.0",
+  "description": "WorkMesh - Offline-first P2P LAN workspace for team chat and controlled file collaboration",
+  "main": "main.js",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1PROO/localShare.git"
+  },
+  "homepage": "https://github.com/1PROO/localShare#readme",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "electron .",
+    "test": "node tests/integration.test.js",
+    "rebuild": "electron-rebuild -f -v 22.3.27 -w better-sqlite3",
+    "generate-icons": "node scripts/generate-icons.js",
+    "dist:win": "npm run generate-icons && npm run build && electron-builder --win nsis",
+    "dist:win:x64": "npm run generate-icons && npm run build && electron-builder --win nsis --x64",
+    "dist:win:ia32": "npm run generate-icons && npm run build && electron-builder --win nsis --ia32"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.10",
+    "archiver": "^5.3.1",
+    "better-sqlite3": "8.7.0",
+    "chokidar": "^3.5.3",
+    "express": "^4.18.2",
+    "lucide-react": "^0.294.0",
+    "qrcode": "^1.5.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.16",
+    "electron": "22.3.27",
+    "electron-builder": "^24.9.1",
+    "electron-rebuild": "^3.2.9",
+    "postcss": "^8.4.32",
+    "tailwindcss": "^3.4.1",
+    "vite": "^4.5.3"
+  },
+  "build": {
+    "appId": "com.workmesh.desktop",
+    "productName": "WorkMesh",
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "database.js",
+      "meshNetwork.js",
+      "sandboxManager.js",
+      "mobileServer.js",
+      "src/mobile/**/*",
+      "dist-renderer/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "unicode": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "include": "build/installer.nsh",
+      "artifactName": "WorkMesh-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "1PROO",
+        "repo": "localShare"
+      }
+    ]
+  }
+}

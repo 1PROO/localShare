@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="wm-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4F46E5" />
+      <stop offset="50%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+    <linearGradient id="wm-shine" x1="0%" y1="0%" x2="80%" y2="80%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Squircle background -->
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#wm-bg)" />
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#wm-shine)" />
+  <rect x="19" y="19" width="218" height="218" rx="45" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="3" />
+
+  <!-- Mesh network links -->
+  <g stroke="#E0F2FE" stroke-opacity="0.88" stroke-width="11" stroke-linecap="round">
+    <line x1="128" y1="58" x2="128" y2="140" />
+    <line x1="60" y1="188" x2="128" y2="140" />
+    <line x1="196" y1="188" x2="128" y2="140" />
+    <line x1="60" y1="188" x2="196" y2="188" stroke-width="8" stroke-opacity="0.65" />
+  </g>
+
+  <!-- Central workspace folder + chat hub -->
+  <path d="M84 114 C84 106 90 100 98 100 L122 100 C127 100 131 103 134 107 L138 111 L158 111 C166 111 172 117 172 125 L172 162 C172 170 166 176 158 176 L98 176 C90 176 84 170 84 162 Z" fill="#FFFFFF" />
+  <rect x="102" y="132" width="44" height="8" rx="4" fill="#4F46E5" />
+  <rect x="102" y="146" width="30" height="8" rx="4" fill="#4F46E5" />
+  <circle cx="150" cy="150" r="6" fill="#10B981" />
+
+  <!-- Peer nodes -->
+  <g>
+    <circle cx="128" cy="58" r="18" fill="#FFFFFF" />
+    <circle cx="128" cy="58" r="9.5" fill="#10B981" />
+
+    <circle cx="60" cy="188" r="18" fill="#FFFFFF" />
+    <circle cx="60" cy="188" r="9.5" fill="#4F46E5" />
+
+    <circle cx="196" cy="188" r="18" fill="#FFFFFF" />
+    <circle cx="196" cy="188" r="9.5" fill="#10B981" />
+  </g>
+</svg>

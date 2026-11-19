@@ -1,0 +1,19 @@
+services:
+  win-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: win-builder
+    image: workmesh-win-builder:latest
+    environment:
+      WIN_ARCH: ${WIN_ARCH:-x64}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    volumes:
+      - ./release:/project/release
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: tester
+    image: workmesh-tester:latest

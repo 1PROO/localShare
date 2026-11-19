@@ -1,0 +1,156 @@
+name: Build & Release WorkMesh Windows Installer
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional release tag override (defaults to v<package.json version>)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Syntax, Build & Integration Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies (without native rebuild)
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Run JavaScript syntax checks
+        run: |
+          for f in main.js preload.js database.js meshNetwork.js sandboxManager.js mobileServer.js src/mobile/app.js tests/integration.test.js; do
+            node --check "$f"
+          done
+
+      - name: Generate icons & build Vite renderer
+        run: |
+          npm run generate-icons
+          npm run build
+
+      - name: Run 13-suite P2P integration tests
+        run: npm test
+
+  build-and-release-windows:
+    name: Build Windows Setup.exe & Publish Release
+    needs: verify
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18 LTS (Electron 22 ABI compatible)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Generate icons & build frontend bundle
+        run: |
+          npm run generate-icons
+          npm run build
+
+      - name: Build universal Windows NSIS installer (x64 + ia32)
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win nsis --publish never
+
+      - name: Resolve release tag & compute SHA-256 checksums
+        id: meta
+        shell: pwsh
+        run: |
+          $pkg = Get-Content -Raw -Path package.json | ConvertFrom-Json
+          $version = $pkg.version
+
+          $overrideTag = "${{ inputs.release_tag }}"
+          if (-not [string]::IsNullOrWhiteSpace($overrideTag)) {
+            $tag = $overrideTag.Trim()
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+          } else {
+            $tag = "v$version"
+          }
+
+          $exeFiles = Get-ChildItem -Path release -Filter "*.exe"
+          if (-not $exeFiles -or $exeFiles.Count -eq 0) {
+            throw "No .exe installer found in release/!"
+          }
+
+          $checksumLines = @()
+          foreach ($file in (Get-ChildItem -Path release -File | Sort-Object Name)) {
+            if ($file.Extension -in @('.exe', '.blockmap')) {
+              $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLower()
+              $checksumLines += "$hash  $($file.Name)"
+            }
+          }
+          $checksumLines | Set-Content -Path "release/SHA256SUMS.txt" -Encoding UTF8
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Prepared release tag: $tag"
+          Get-ChildItem -Path release
+
+      - name: Upload installer build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WorkMesh-Windows-Installer-${{ steps.meta.outputs.tag }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/SHA256SUMS.txt
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: WorkMesh ${{ steps.meta.outputs.tag }} — Windows Installer
+          draft: false
+          prerelease: false
+          make_latest: true
+          generate_release_notes: true
+          body: |
+            ## WorkMesh Desktop Installer (${{ steps.meta.outputs.tag }})
+
+            تطبيق **WorkMesh** اللامركزي للمحادثة وإدارة الملفات عبر الشبكة المحلية (P2P LAN Mesh & Local-First) بدون خادم مركزي أو إنترنت.
+
+            ### مواصفات المثبت (Windows Installer)
+            - **التوافق:** Windows 7 (SP1) و Windows 10 و Windows 11 (مثبّت موحد `x64` + `ia32`).
+            - **التركيب:** معالج `Next > Next > Install` يُنشئ مجلد المزامنة المخفي `C:\ProgramData\WorkMesh_Vault` تلقائياً مع صلاحيات التشغيل والبدء التلقائي مع الويندوز (`Auto-Start`) وقواعد الجدار الناري للشبكة المحلية.
+            - **المزايا المضمنة:** `Electron v22.3.27`، قاعدة بيانات `better-sqlite3` المحلية، ربط الهاتف عبر `QR Code`، العزل المؤقت `Temp Shadow Sandbox`، الوراثة الهرمية للصلاحيات واستعادة كلمة المرور بدون إنترنت، وسلة المحذوفات المعزولة.
+
+            ### الملفات المرفقة (Assets)
+            - `WorkMesh-Setup-${{ steps.meta.outputs.version }}.exe` — ملف التثبيت الكامل لويندوز.
+            - `SHA256SUMS.txt` — بصمة التحقق من سلامة الملفات.
+          files: |
+            release/*.exe
+            release/*.blockmap
+            release/SHA256SUMS.txt
