@@ -51,6 +51,112 @@ function hashSecret(secret, saltHex) {
 }
 
 /**
+ * Constant-time hex string equality check.
+ * @param {string} aHex
+ * @param {string} bHex
+ * @returns {boolean}
+ */
+function timingSafeHexEqual(aHex, bHex) {
+  if (!aHex || !bHex) return false;
+  try {
+    const a = Buffer.from(String(aHex), 'hex');
+    const b = Buffer.from(String(bHex), 'hex');
+    if (a.length === 0 || a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * Computes lowercase SHA-256 hex digest of a UTF-8 string.
+ * @param {string} value
+ * @returns {string}
+ */
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(String(value ?? ''), 'utf8').digest('hex');
+}
+
+/**
+ * Hashes a 4-6 digit account PIN using SHA-256.
+ * @param {string|number} pin
+ * @returns {string}
+ */
+function hashPin(pin) {
+  return sha256Hex(String(pin ?? '').trim());
+}
+
+/**
+ * Constant-time verification of an account PIN against a SHA-256 hex hash.
+ * @param {string|number} pin
+ * @param {string} expectedHash
+ * @returns {boolean}
+ */
+function verifyPin(pin, expectedHash) {
+  if (pin === null || pin === undefined || !expectedHash) return false;
+  return timingSafeHexEqual(hashPin(pin), expectedHash);
+}
+
+/**
+ * Generates a 6-character recovery code from RECOVERY_KEY_ALPHABET using unbiased bitmasking.
+ * @returns {string}
+ */
+function generateRecoveryCode() {
+  const bytes = crypto.randomBytes(6);
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += RECOVERY_KEY_ALPHABET[bytes[i] & 31];
+  }
+  return code;
+}
+
+/**
+ * Hashes a 6-character mobile recovery code using SHA-256 after normalization.
+ * @param {string} code
+ * @returns {string}
+ */
+function hashRecoveryCode(code) {
+  return sha256Hex(normalizeRecoveryKey(code));
+}
+
+/**
+ * Verifies a 6-character recovery code against its SHA-256 hash.
+ * @param {string} code
+ * @param {string} expectedHash
+ * @returns {boolean}
+ */
+function verifyRecoveryCode(code, expectedHash) {
+  if (!code || !expectedHash) return false;
+  return timingSafeHexEqual(hashRecoveryCode(code), expectedHash);
+}
+
+/**
+ * Hashes a security question answer using SHA-256 after normalization.
+ * @param {string} answer
+ * @returns {string}
+ */
+function hashSecurityAnswerSha256(answer) {
+  return sha256Hex(String(answer || '').trim().toLowerCase());
+}
+
+/**
+ * Verifies a security answer using scrypt when saltHex is present (desktop accounts),
+ * or SHA-256 when saltHex is absent (standalone mobile accounts).
+ * @param {string} answer
+ * @param {string} expectedHash
+ * @param {string|null} [saltHex]
+ * @returns {boolean}
+ */
+function verifySecurityAnswerFlexible(answer, expectedHash, saltHex) {
+  if (answer === null || answer === undefined || !expectedHash) return false;
+  const normalized = String(answer).trim().toLowerCase();
+  if (saltHex) {
+    return verifySecret(normalized, expectedHash, saltHex);
+  }
+  return timingSafeHexEqual(sha256Hex(normalized), expectedHash);
+}
+
+/**
  * Constant-time verification of a secret against a scrypt hash and hex salt.
  * @param {string} secret
  * @param {string} expectedHash
@@ -367,7 +473,7 @@ function hydrateTrashItem(row) {
   };
 }
 
-class WorkMeshDatabase {
+class TwinSyncDatabase {
   /**
    * @param {string} dbPath
    */
@@ -390,7 +496,61 @@ class WorkMeshDatabase {
     } catch (_) {}
 
     this._initSchema();
+    this._migrateSchema();
     this._lamportClock = this._loadInitialLamportClock();
+  }
+
+  _ensureColumn(tableName, colName, colDefSql) {
+    const cols = this.db.prepare(`PRAGMA table_info(${tableName})`).all();
+    if (!cols.some((c) => c.name === colName)) {
+      this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${colName} ${colDefSql}`);
+    }
+  }
+
+  _migrateSchema() {
+    this._ensureColumn('local_identity', 'device_type', "TEXT NOT NULL DEFAULT 'desktop'");
+    this._ensureColumn('local_identity', 'pin_hash', 'TEXT');
+
+    this._ensureColumn('peers', 'name', "TEXT NOT NULL DEFAULT ''");
+    this._ensureColumn('peers', 'avatar', 'TEXT');
+    this._ensureColumn('peers', 'device_type', "TEXT NOT NULL DEFAULT 'desktop'");
+    this._ensureColumn('peers', 'pin_hash', 'TEXT');
+    this._ensureColumn('peers', 'recovery_code_hash', 'TEXT');
+    this._ensureColumn('peers', 'gateway_uuid', 'TEXT');
+
+    this._ensureColumn('messages', 'receiver_uuid', 'TEXT');
+    this._ensureColumn('messages', 'is_group', 'INTEGER NOT NULL DEFAULT 0');
+
+    // Backfill peers name & avatar fields
+    this.db.exec(`
+      UPDATE peers SET name = display_name
+      WHERE (name IS NULL OR name = '') AND display_name IS NOT NULL AND display_name != '';
+      UPDATE peers SET display_name = name
+      WHERE (display_name IS NULL OR display_name = '') AND name IS NOT NULL AND name != '';
+      UPDATE peers SET avatar = avatar_data
+      WHERE avatar IS NULL AND avatar_data IS NOT NULL;
+      UPDATE peers SET avatar_data = avatar
+      WHERE avatar_data IS NULL AND avatar IS NOT NULL;
+    `);
+
+    // Backfill messages is_group & receiver_uuid
+    this.db.exec(`
+      UPDATE messages SET is_group = 1
+      WHERE is_group = 0
+        AND (conversation_id IN (SELECT id FROM conversations WHERE type = 'group') OR conversation_id LIKE 'grp:%');
+      UPDATE messages
+      SET receiver_uuid = (
+        SELECT cm.peer_uuid FROM conversation_members cm
+        WHERE cm.conversation_id = messages.conversation_id
+          AND cm.peer_uuid != messages.sender_uuid
+        LIMIT 1
+      )
+      WHERE receiver_uuid IS NULL AND is_group = 0;
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_privacy ON messages(conversation_id, sender_uuid, receiver_uuid, is_group);
+    `);
   }
 
   _initSchema() {
@@ -556,13 +716,23 @@ class WorkMeshDatabase {
     if (!row) return null;
     return {
       ...row,
+      name: row.display_name || '',
+      avatar: row.avatar_data ?? null,
+      device_type: row.device_type || 'desktop',
+      has_pin: Boolean(row.pin_hash),
       onboarded: Boolean(row.onboarded),
+      onboarding_done: Boolean(row.onboarded),
     };
   }
 
   ensureIdentity() {
     const existing = this.getIdentity();
-    if (existing) return existing;
+    if (existing) {
+      if (!this.getPeer(existing.uuid)) {
+        this._syncSelfToPeers(existing);
+      }
+      return existing;
+    }
 
     const now = Date.now();
     const uuid = generateUuid();
@@ -573,13 +743,15 @@ class WorkMeshDatabase {
 
     this.db.prepare(`
       INSERT INTO local_identity (
-        id, uuid, display_name, avatar_data, onboarded,
+        id, uuid, display_name, avatar_data, device_type, onboarded,
         master_recovery_key, recovery_key_hash, recovery_key_salt,
         created_at, updated_at
-      ) VALUES (1, @uuid, '', NULL, 0, @masterKey, @recoveryKeyHash, @recoveryKeySalt, @now, @now)
+      ) VALUES (1, @uuid, '', NULL, 'desktop', 0, @masterKey, @recoveryKeyHash, @recoveryKeySalt, @now, @now)
     `).run({ uuid, masterKey, recoveryKeyHash, recoveryKeySalt, now });
 
-    return this.getIdentity();
+    const created = this.getIdentity();
+    this._syncSelfToPeers(created);
+    return created;
   }
 
   _syncSelfToPeers(identity) {
@@ -587,21 +759,25 @@ class WorkMeshDatabase {
     this.upsertPeer({
       uuid: identity.uuid,
       display_name: identity.display_name || '',
+      name: identity.display_name || '',
       avatar_data: identity.avatar_data ?? null,
+      avatar: identity.avatar_data ?? null,
+      device_type: 'desktop',
+      pin_hash: identity.pin_hash ?? null,
       status: 'online',
       last_seen: Date.now(),
-      recovery_key_hash: identity.recovery_key_hash,
-      recovery_key_salt: identity.recovery_key_salt,
-      security_question: identity.security_question,
-      security_answer_hash: identity.security_answer_hash,
-      security_answer_salt: identity.security_answer_salt,
+      recovery_key_hash: identity.recovery_key_hash ?? null,
+      recovery_key_salt: identity.recovery_key_salt ?? null,
+      security_question: identity.security_question ?? null,
+      security_answer_hash: identity.security_answer_hash ?? null,
+      security_answer_salt: identity.security_answer_salt ?? null,
       updated_at: identity.updated_at || Date.now(),
     });
   }
 
   completeOnboarding({ displayName, avatarData = null, securityQuestion, securityAnswer }) {
     const current = this.ensureIdentity();
-    const now = Date.now();
+    const now = Math.max(Date.now(), (current.updated_at || 0) + 1);
     const cleanName = String(displayName || '').trim();
     const cleanQuestion = String(securityQuestion || '').trim();
     const { hash: secHash, salt: secSalt } = hashSecret(normalizeSecurityAnswer(securityAnswer));
@@ -632,7 +808,7 @@ class WorkMeshDatabase {
 
   updateProfile({ displayName, avatarData }) {
     const current = this.ensureIdentity();
-    const now = Date.now();
+    const now = Math.max(Date.now(), (current.updated_at || 0) + 1);
     const nextName = displayName !== undefined ? String(displayName).trim() : current.display_name;
     const nextAvatar = avatarData !== undefined ? avatarData : current.avatar_data;
 
@@ -651,7 +827,7 @@ class WorkMeshDatabase {
 
   updateSecurityQA({ securityQuestion, securityAnswer }) {
     const current = this.ensureIdentity();
-    const now = Date.now();
+    const now = Math.max(Date.now(), (current.updated_at || 0) + 1);
     const nextQuestion =
       securityQuestion !== undefined ? String(securityQuestion).trim() : current.security_question;
 
@@ -671,6 +847,27 @@ class WorkMeshDatabase {
         updated_at = @now
       WHERE id = 1
     `).run({ nextQuestion, secHash, secSalt, now });
+
+    const updated = this.getIdentity();
+    this._syncSelfToPeers(updated);
+    return updated;
+  }
+
+  updateLocalPin(pin) {
+    const cleanPin = String(pin ?? '').trim();
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      throw new Error('PIN must be 4 to 6 numeric digits');
+    }
+    const current = this.ensureIdentity();
+    const now = Math.max(Date.now(), (current.updated_at || 0) + 1);
+    const pinHash = hashPin(cleanPin);
+
+    this.db.prepare(`
+      UPDATE local_identity SET
+        pin_hash = ?,
+        updated_at = ?
+      WHERE id = 1
+    `).run(pinHash, now);
 
     const updated = this.getIdentity();
     this._syncSelfToPeers(updated);
@@ -710,10 +907,35 @@ class WorkMeshDatabase {
   upsertPeer(peer) {
     if (!peer || !peer.uuid) throw new Error('Peer uuid is required');
     const now = Date.now();
+    const resolvedDisplayName = peer.display_name ?? peer.displayName ?? peer.name ?? '';
+    const resolvedName = peer.name ?? peer.display_name ?? peer.displayName ?? '';
+    const hasAvatar =
+      peer.avatar_data !== undefined || peer.avatarData !== undefined || peer.avatar !== undefined;
+    const resolvedAvatar =
+      peer.avatar_data !== undefined
+        ? peer.avatar_data
+        : (peer.avatarData !== undefined ? peer.avatarData : (peer.avatar ?? null));
+    const explicitDeviceType = peer.device_type ?? peer.deviceType;
+    const hasPinHash = peer.pin_hash !== undefined || peer.pinHash !== undefined;
+    const resolvedPinHash = peer.pin_hash !== undefined ? peer.pin_hash : (peer.pinHash ?? null);
+    const hasRecoveryCodeHash =
+      peer.recovery_code_hash !== undefined || peer.recoveryCodeHash !== undefined;
+    const resolvedRecoveryCodeHash =
+      peer.recovery_code_hash !== undefined ? peer.recovery_code_hash : (peer.recoveryCodeHash ?? null);
+    const hasGatewayUuid = peer.gateway_uuid !== undefined || peer.gatewayUuid !== undefined;
+    const resolvedGatewayUuid =
+      peer.gateway_uuid !== undefined ? peer.gateway_uuid : (peer.gatewayUuid ?? null);
+
     const payload = {
       uuid: String(peer.uuid),
-      display_name: peer.display_name ?? peer.displayName ?? '',
-      avatar_data: peer.avatar_data !== undefined ? peer.avatar_data : (peer.avatarData ?? null),
+      display_name: resolvedDisplayName,
+      name: resolvedName,
+      avatar_data: resolvedAvatar,
+      avatar: resolvedAvatar,
+      device_type: explicitDeviceType || 'desktop',
+      pin_hash: resolvedPinHash,
+      recovery_code_hash: resolvedRecoveryCodeHash,
+      gateway_uuid: resolvedGatewayUuid,
       ip: peer.ip ?? null,
       ws_port: peer.ws_port ?? peer.wsPort ?? null,
       status: peer.status ?? 'offline',
@@ -730,21 +952,43 @@ class WorkMeshDatabase {
     if (!existing) {
       this.db.prepare(`
         INSERT INTO peers (
-          uuid, display_name, avatar_data, ip, ws_port, status, last_seen,
+          uuid, display_name, name, avatar_data, avatar, device_type,
+          pin_hash, recovery_code_hash, gateway_uuid,
+          ip, ws_port, status, last_seen,
           recovery_key_hash, recovery_key_salt, security_question,
           security_answer_hash, security_answer_salt, updated_at
         ) VALUES (
-          @uuid, @display_name, @avatar_data, @ip, @ws_port, @status, @last_seen,
+          @uuid, @display_name, @name, @avatar_data, @avatar, @device_type,
+          @pin_hash, @recovery_code_hash, @gateway_uuid,
+          @ip, @ws_port, @status, @last_seen,
           @recovery_key_hash, @recovery_key_salt, @security_question,
           @security_answer_hash, @security_answer_salt, @updated_at
         )
       `).run(payload);
     } else {
       const acceptProfile = payload.updated_at >= (existing.updated_at || 0);
+      const nextDisplayName =
+        acceptProfile && payload.display_name ? payload.display_name : (existing.display_name || '');
+      const nextName =
+        acceptProfile && payload.name
+          ? payload.name
+          : (existing.name || nextDisplayName || '');
+      const nextAvatar = acceptProfile && hasAvatar ? resolvedAvatar : existing.avatar_data;
+      const nextDeviceType =
+        explicitDeviceType !== undefined
+          ? explicitDeviceType
+          : (existing.device_type || 'desktop');
+
       this.db.prepare(`
         UPDATE peers SET
           display_name = @display_name,
+          name = @name,
           avatar_data = @avatar_data,
+          avatar = @avatar,
+          device_type = @device_type,
+          pin_hash = @pin_hash,
+          recovery_code_hash = @recovery_code_hash,
+          gateway_uuid = @gateway_uuid,
           ip = @ip,
           ws_port = @ws_port,
           status = @status,
@@ -758,11 +1002,23 @@ class WorkMeshDatabase {
         WHERE uuid = @uuid
       `).run({
         uuid: payload.uuid,
-        display_name: acceptProfile && payload.display_name ? payload.display_name : existing.display_name,
-        avatar_data:
-          acceptProfile && peer.avatar_data !== undefined
-            ? peer.avatar_data
-            : (acceptProfile && peer.avatarData !== undefined ? peer.avatarData : existing.avatar_data),
+        display_name: nextDisplayName,
+        name: nextName,
+        avatar_data: nextAvatar,
+        avatar: nextAvatar,
+        device_type: nextDeviceType,
+        pin_hash:
+          acceptProfile && hasPinHash
+            ? (resolvedPinHash ?? existing.pin_hash)
+            : existing.pin_hash,
+        recovery_code_hash:
+          acceptProfile && hasRecoveryCodeHash
+            ? (resolvedRecoveryCodeHash ?? existing.recovery_code_hash)
+            : existing.recovery_code_hash,
+        gateway_uuid:
+          acceptProfile && hasGatewayUuid
+            ? resolvedGatewayUuid
+            : existing.gateway_uuid,
         ip: payload.ip ?? existing.ip,
         ws_port: payload.ws_port ?? existing.ws_port,
         status: peer.status ?? existing.status,
@@ -794,6 +1050,71 @@ class WorkMeshDatabase {
     return this.getPeer(payload.uuid);
   }
 
+  createStandalonePeer({
+    uuid,
+    name,
+    displayName,
+    avatar = null,
+    avatarData,
+    pin,
+    pinHash,
+    securityQuestion,
+    securityAnswer,
+    securityAnswerHash,
+    recoveryCode,
+    recoveryCodeHash,
+    gatewayUuid = null,
+  }) {
+    const cleanName = String(name ?? displayName ?? '').trim();
+    if (!cleanName) throw new Error('Display name is required');
+
+    let finalPinHash = pinHash || null;
+    if (pin !== undefined) {
+      const cleanPin = String(pin).trim();
+      if (!/^\d{4,6}$/.test(cleanPin)) {
+        throw new Error('PIN must be 4 to 6 numeric digits');
+      }
+      finalPinHash = hashPin(cleanPin);
+    }
+    if (!finalPinHash) throw new Error('PIN is required');
+
+    const finalAvatar = avatar !== undefined ? avatar : (avatarData ?? null);
+    const cleanQuestion = String(securityQuestion ?? '').trim();
+    const finalAnswerHash =
+      securityAnswerHash || (securityAnswer !== undefined ? hashSecurityAnswerSha256(securityAnswer) : null);
+    const finalRecoveryCodeHash =
+      recoveryCodeHash || (recoveryCode ? hashRecoveryCode(recoveryCode) : hashRecoveryCode(generateRecoveryCode()));
+
+    const now = Date.now();
+    return this.upsertPeer({
+      uuid: uuid || generateUuid(),
+      display_name: cleanName,
+      name: cleanName,
+      avatar_data: finalAvatar,
+      avatar: finalAvatar,
+      device_type: 'mobile',
+      pin_hash: finalPinHash,
+      recovery_code_hash: finalRecoveryCodeHash,
+      security_question: cleanQuestion || null,
+      security_answer_hash: finalAnswerHash,
+      security_answer_salt: null,
+      gateway_uuid: gatewayUuid,
+      status: 'online',
+      last_seen: now,
+      updated_at: now,
+    });
+  }
+
+  updatePeerPin(uuid, pinHash) {
+    const existing = this.getPeer(uuid);
+    if (!existing) return null;
+    const nextUpdatedAt = Math.max(Date.now(), (existing.updated_at || 0) + 1);
+    this.db.prepare(`
+      UPDATE peers SET pin_hash = ?, updated_at = ? WHERE uuid = ?
+    `).run(pinHash, nextUpdatedAt, uuid);
+    return this.getPeer(uuid);
+  }
+
   setPeerStatus(uuid, status, lastSeen = Date.now()) {
     this.db.prepare(`
       UPDATE peers SET status = ?, last_seen = MAX(last_seen, ?) WHERE uuid = ?
@@ -814,6 +1135,69 @@ class WorkMeshDatabase {
       SELECT * FROM peers
       ORDER BY CASE WHEN status = 'online' THEN 0 ELSE 1 END, display_name COLLATE NOCASE ASC
     `).all();
+  }
+
+  getPeersUpdatedSince(ts = 0) {
+    return this.db.prepare(
+      'SELECT * FROM peers WHERE updated_at > ? ORDER BY updated_at ASC'
+    ).all(Number(ts) || 0);
+  }
+
+  getAllAccounts() {
+    const identity = this.getIdentity();
+    const rows = this.db.prepare(`
+      SELECT * FROM peers
+      WHERE (display_name != '' OR name != '' OR pin_hash IS NOT NULL)
+      ORDER BY CASE WHEN status = 'online' THEN 0 ELSE 1 END,
+               CASE WHEN device_type = 'desktop' THEN 0 ELSE 1 END,
+               display_name COLLATE NOCASE ASC
+    `).all();
+
+    const accounts = [];
+    let selfIncluded = false;
+    for (const row of rows) {
+      const isSelf = Boolean(identity && row.uuid === identity.uuid);
+      if (isSelf) selfIncluded = true;
+      const deviceType = isSelf ? 'desktop' : (row.device_type || 'desktop');
+      const displayName = isSelf
+        ? (identity.display_name || row.display_name || '')
+        : (row.display_name || row.name || '');
+      const avatarData = isSelf
+        ? (identity.avatar_data ?? row.avatar_data ?? null)
+        : (row.avatar_data ?? row.avatar ?? null);
+
+      accounts.push({
+        uuid: row.uuid,
+        display_name: displayName,
+        name: row.name || displayName,
+        avatar_data: avatarData,
+        avatar: avatarData,
+        device_type: deviceType,
+        status: isSelf ? 'online' : (row.status || 'offline'),
+        has_pin: Boolean(isSelf ? identity.pin_hash : row.pin_hash),
+        security_question: deviceType === 'mobile' ? (row.security_question || '') : '',
+        last_seen: isSelf ? Date.now() : (row.last_seen || 0),
+        gateway_uuid: row.gateway_uuid ?? null,
+      });
+    }
+
+    if (identity && !selfIncluded && (identity.display_name || identity.pin_hash)) {
+      accounts.unshift({
+        uuid: identity.uuid,
+        display_name: identity.display_name || '',
+        name: identity.display_name || '',
+        avatar_data: identity.avatar_data ?? null,
+        avatar: identity.avatar_data ?? null,
+        device_type: 'desktop',
+        status: 'online',
+        has_pin: Boolean(identity.pin_hash),
+        security_question: '',
+        last_seen: Date.now(),
+        gateway_uuid: null,
+      });
+    }
+
+    return accounts;
   }
 
   getPeer(uuid) {
@@ -925,9 +1309,31 @@ class WorkMeshDatabase {
     return this.getConversation(conv.id);
   }
 
+  isConversationMember(conversationId, actorUuid) {
+    if (!conversationId || !actorUuid) return false;
+    const row = this.db.prepare(
+      'SELECT 1 FROM conversation_members WHERE conversation_id = ? AND peer_uuid = ?'
+    ).get(String(conversationId), String(actorUuid));
+    return Boolean(row);
+  }
+
+  getAllConversationsWithMembers() {
+    const convs = this.db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all();
+    return convs.map((c) => {
+      const memberRows = this.db.prepare(
+        'SELECT peer_uuid FROM conversation_members WHERE conversation_id = ? ORDER BY joined_at ASC'
+      ).all(c.id);
+      return {
+        ...c,
+        members: memberRows.map((m) => m.peer_uuid),
+      };
+    });
+  }
+
   _getHydratedMembers(conversationId) {
     const memberRows = this.db.prepare(`
-      SELECT cm.peer_uuid, cm.joined_at, p.display_name, p.avatar_data, p.status, p.last_seen, p.ip
+      SELECT cm.peer_uuid, cm.joined_at, p.display_name, p.name, p.avatar_data, p.avatar,
+             p.device_type, p.status, p.last_seen, p.ip, p.gateway_uuid
       FROM conversation_members cm
       LEFT JOIN peers p ON p.uuid = cm.peer_uuid
       WHERE cm.conversation_id = ?
@@ -937,21 +1343,32 @@ class WorkMeshDatabase {
     const identity = this.getIdentity();
     return memberRows.map((row) => {
       if (identity && row.peer_uuid === identity.uuid) {
+        const dName = row.display_name || identity.display_name || 'Me';
+        const av = row.avatar_data ?? identity.avatar_data ?? null;
         return {
           uuid: identity.uuid,
           peer_uuid: identity.uuid,
-          display_name: row.display_name || identity.display_name || 'Me',
-          avatar_data: row.avatar_data ?? identity.avatar_data ?? null,
+          display_name: dName,
+          name: row.name || dName,
+          avatar_data: av,
+          avatar: av,
+          device_type: identity.device_type || 'desktop',
           status: 'online',
           last_seen: Date.now(),
           joined_at: row.joined_at,
         };
       }
+      const dName = row.display_name || row.name || 'Peer';
+      const av = row.avatar_data ?? row.avatar ?? null;
       return {
         uuid: row.peer_uuid,
         peer_uuid: row.peer_uuid,
-        display_name: row.display_name || 'Peer',
-        avatar_data: row.avatar_data ?? null,
+        display_name: dName,
+        name: row.name || dName,
+        avatar_data: av,
+        avatar: av,
+        device_type: row.device_type || 'desktop',
+        gateway_uuid: row.gateway_uuid ?? null,
         status: row.status || 'offline',
         last_seen: row.last_seen || 0,
         ip: row.ip ?? null,
@@ -1119,18 +1536,42 @@ class WorkMeshDatabase {
             : JSON.stringify(msg.attachment_json))
         : (attachmentObj ? JSON.stringify(attachmentObj) : null);
 
+    const convRow = this.db.prepare('SELECT id, type FROM conversations WHERE id = ?').get(convId);
+    const isGroup =
+      msg.is_group !== undefined
+        ? (msg.is_group ? 1 : 0)
+        : (convRow ? (convRow.type === 'group' ? 1 : 0) : (String(convId || '').startsWith('grp:') ? 1 : 0));
+
+    let receiverUuid = msg.receiver_uuid ?? msg.receiverUuid ?? null;
+    if (!isGroup && !receiverUuid && convId) {
+      const otherMember = this.db.prepare(
+        'SELECT peer_uuid FROM conversation_members WHERE conversation_id = ? AND peer_uuid != ? LIMIT 1'
+      ).get(convId, senderUuid);
+      if (otherMember) {
+        receiverUuid = otherMember.peer_uuid;
+      } else if (String(convId).startsWith('dm:')) {
+        const parts = String(convId).split(':');
+        if (parts.length === 3) {
+          receiverUuid = parts[1] === senderUuid ? parts[2] : parts[1];
+        }
+      }
+    }
+    if (isGroup) receiverUuid = null;
+
     const existing = this.db.prepare('SELECT id, lamport_ts FROM messages WHERE id = ?').get(msg.id);
 
     const tx = this.db.transaction(() => {
       if (!existing) {
         this.db.prepare(`
           INSERT INTO messages (
-            id, conversation_id, sender_uuid, sender_name, type, body,
+            id, conversation_id, sender_uuid, receiver_uuid, is_group,
+            sender_name, type, body,
             reply_to_id, forwarded_from_id, attachment_json,
             vault_link_path, vault_link_is_dir,
             lamport_ts, created_at, edited_at, deleted_at
           ) VALUES (
-            @id, @conversation_id, @sender_uuid, @sender_name, @type, @body,
+            @id, @conversation_id, @sender_uuid, @receiver_uuid, @is_group,
+            @sender_name, @type, @body,
             @reply_to_id, @forwarded_from_id, @attachment_json,
             @vault_link_path, @vault_link_is_dir,
             @lamport_ts, @created_at, @edited_at, @deleted_at
@@ -1139,6 +1580,8 @@ class WorkMeshDatabase {
           id: msg.id,
           conversation_id: convId,
           sender_uuid: senderUuid,
+          receiver_uuid: receiverUuid,
+          is_group: isGroup,
           sender_name: senderName,
           type: msg.type || 'text',
           body: msg.body ?? '',
@@ -1204,11 +1647,41 @@ class WorkMeshDatabase {
     return this._hydrateMessages([row])[0];
   }
 
-  getMessages(conversationId, { limit = 100, search = '' } = {}) {
+  getMessages(conversationId, { limit = 100, search = '', actorUuid = null } = {}) {
+    if (actorUuid && !this.isConversationMember(conversationId, actorUuid)) {
+      return [];
+    }
     const lim = Math.max(1, Math.min(Number(limit) || 100, 1000));
     const q = String(search || '').trim();
     let rows;
-    if (q) {
+    if (actorUuid) {
+      if (q) {
+        const like = `%${q}%`;
+        rows = this.db.prepare(`
+          SELECT * FROM (
+            SELECT * FROM messages
+            WHERE conversation_id = ?
+              AND (sender_uuid = ? OR receiver_uuid = ? OR is_group = 1)
+              AND deleted_at IS NULL
+              AND (body LIKE ? OR sender_name LIKE ? OR attachment_json LIKE ? OR vault_link_path LIKE ?)
+            ORDER BY created_at DESC, lamport_ts DESC
+            LIMIT ?
+          ) sub
+          ORDER BY created_at ASC, lamport_ts ASC
+        `).all(conversationId, actorUuid, actorUuid, like, like, like, like, lim);
+      } else {
+        rows = this.db.prepare(`
+          SELECT * FROM (
+            SELECT * FROM messages
+            WHERE conversation_id = ?
+              AND (sender_uuid = ? OR receiver_uuid = ? OR is_group = 1)
+            ORDER BY created_at DESC, lamport_ts DESC
+            LIMIT ?
+          ) sub
+          ORDER BY created_at ASC, lamport_ts ASC
+        `).all(conversationId, actorUuid, actorUuid, lim);
+      }
+    } else if (q) {
       const like = `%${q}%`;
       rows = this.db.prepare(`
         SELECT * FROM (
@@ -1656,12 +2129,21 @@ class WorkMeshDatabase {
 }
 
 module.exports = {
-  WorkMeshDatabase,
+  TwinSyncDatabase,
+  WorkMeshDatabase: TwinSyncDatabase,
   generateUuid,
   generateMasterRecoveryKey,
   normalizeRecoveryKey,
   hashSecret,
   verifySecret,
+  sha256Hex,
+  hashPin,
+  verifyPin,
+  generateRecoveryCode,
+  hashRecoveryCode,
+  verifyRecoveryCode,
+  hashSecurityAnswerSha256,
+  verifySecurityAnswerFlexible,
   normalizeRelPath,
   getParentRelPath,
   getAncestorPaths,

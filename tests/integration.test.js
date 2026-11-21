@@ -9,13 +9,14 @@ const crypto = require('crypto');
 const assert = require('assert');
 const WebSocket = require('ws');
 
-const { WorkMeshDatabase } = require('../database');
+const { TwinSyncDatabase } = require('../database');
 const { MeshNetwork } = require('../meshNetwork');
 const { SandboxManager } = require('../sandboxManager');
 const { MobileServer } = require('../mobileServer');
 
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RECOVERY_KEY_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}$/;
+const RECOVERY_CODE_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -123,14 +124,17 @@ async function runTests() {
   const openedPathsA = [];
   const openedPathsB = [];
 
-  const dbA = new WorkMeshDatabase(path.join(vaultA.metaDir, 'workmesh.db'));
-  const dbB = new WorkMeshDatabase(path.join(vaultB.metaDir, 'workmesh.db'));
+  const dbA = new TwinSyncDatabase(path.join(vaultA.metaDir, 'twinsync.db'));
+  const dbB = new TwinSyncDatabase(path.join(vaultB.metaDir, 'twinsync.db'));
 
   let meshA = null;
   let meshB = null;
   let sandboxA = null;
   let sandboxB = null;
   let mobileA = null;
+  let mobileB = null;
+  let mobilePortA = 0;
+  let mobilePortB = 0;
 
   const unlockedA = new Set();
   const unlockedB = new Set();
@@ -991,6 +995,7 @@ async function runTests() {
         port: 0,
       });
       const mobilePort = await mobileA.start();
+      mobilePortA = mobilePort;
 
       // Pairing & QR
       const pairing = await mobileA.getPairingInfo();
@@ -1126,11 +1131,519 @@ async function runTests() {
       assert.strictEqual(newTokCheck.status, 200);
     });
 
+    // -------------------------------------------------------------------------
+    // 14. PC Account PIN + Offline PC Account Roaming
+    // -------------------------------------------------------------------------
+    await runStep('14. PC Account PIN + Offline PC Account Roaming (accessing chats & private folder)', async () => {
+      mobileB = new MobileServer({
+        db: dbB,
+        meshNetwork: meshB,
+        sandboxManager: sandboxB,
+        vaultPaths: vaultB,
+        port: 0,
+      });
+      mobilePortB = await mobileB.start();
+
+      // Add a confidential file in Alice's private /Finance folder and sync to Peer B
+      const budgetSrc = path.join(tempWorkDir, 'Budget2026.txt');
+      fs.writeFileSync(budgetSrc, 'ALICE_CONFIDENTIAL_BUDGET_2026');
+      const impBudget = await sandboxA.importOsPathsToVault([budgetSrc], 'Finance', 'overwrite', idA.uuid, unlockedA);
+      assert.strictEqual(impBudget.ok, true);
+
+      await waitFor(
+        () =>
+          dbB.getVaultNode('Finance/Budget2026.txt') &&
+          fs.existsSync(path.join(vaultB.filesDir, 'Finance', 'Budget2026.txt')),
+        { desc: 'Finance/Budget2026.txt synced to Peer B' }
+      );
+
+      // Alice sets her PC Account PIN on PC A and broadcasts profile update
+      idA = dbA.updateLocalPin('4829');
+      assert.strictEqual(idA.has_pin, true);
+      meshA.broadcastProfileUpdate();
+
+      await waitFor(
+        () => Boolean(dbB.getPeer(idA.uuid)?.pin_hash),
+        { desc: 'Alice PIN hash synced to Peer B' }
+      );
+
+      // Public accounts listing exposes neither hashes nor desktop security_question
+      const accRes = await httpRequest(mobilePortB, 'GET', '/api/auth/accounts');
+      assert.strictEqual(accRes.status, 200);
+      assert.strictEqual(accRes.data.ok, true);
+      const aliceAcc = accRes.data.accounts.find((a) => a.uuid === idA.uuid);
+      assert(aliceAcc, 'Alice account listed on PC B portal');
+      assert.strictEqual(aliceAcc.device_type, 'desktop');
+      assert.strictEqual(aliceAcc.has_pin, true);
+      assert.strictEqual(aliceAcc.security_question, '');
+      assert.strictEqual(aliceAcc.pin_hash, undefined);
+      assert.strictEqual(aliceAcc.security_answer_hash, undefined);
+      assert.strictEqual(aliceAcc.recovery_key_hash, undefined);
+
+      // Stop Peer A completely (Alice's PC goes offline)
+      await mobileA.stop();
+      mobileA = null;
+      await meshA.stop();
+      await waitFor(() => meshB.getStatus().onlineCount === 0, { desc: 'Peer B detects Peer A offline' });
+
+      // Invalid PIN rejected with 401
+      const badPinLogin = await httpRequest(mobilePortB, 'POST', '/api/auth/login', {
+        body: { uuid: idA.uuid, pin: '0000' },
+      });
+      assert.strictEqual(badPinLogin.status, 401);
+      assert.strictEqual(badPinLogin.data.code, 'INVALID_PIN');
+
+      // Account without PIN rejected with 403 PIN_NOT_SET
+      const noPinLogin = await httpRequest(mobilePortB, 'POST', '/api/auth/login', {
+        body: { uuid: idB.uuid, pin: '1234' },
+      });
+      assert.strictEqual(noPinLogin.status, 403);
+      assert.strictEqual(noPinLogin.data.code, 'PIN_NOT_SET');
+
+      // Valid PIN logs Alice into PC B's portal
+      const aliceLogin = await httpRequest(mobilePortB, 'POST', '/api/auth/login', {
+        body: { uuid: idA.uuid, pin: '4829' },
+      });
+      assert.strictEqual(aliceLogin.status, 200);
+      assert.strictEqual(aliceLogin.data.ok, true);
+      assert.strictEqual(aliceLogin.data.mode, 'portal');
+      assert.strictEqual(aliceLogin.data.identity.uuid, idA.uuid);
+      const alicePortalTok = aliceLogin.data.token;
+
+      // Bootstrap & read chats while PC A is offline
+      const aliceBoot = await httpRequest(mobilePortB, 'GET', '/api/bootstrap', { token: alicePortalTok });
+      assert.strictEqual(aliceBoot.status, 200);
+      assert.strictEqual(aliceBoot.data.mode, 'portal');
+      assert.strictEqual(aliceBoot.data.identity.uuid, idA.uuid);
+      assert(aliceBoot.data.conversations.some((c) => c.id === dmConv.id), 'Alice sees her DM conversation on PC B');
+      assert(aliceBoot.data.peers.some((p) => p.uuid === idB.uuid), 'Alice sees host PC B in peers');
+      assert(!aliceBoot.data.peers.some((p) => p.uuid === idA.uuid), 'Peers list excludes actor self');
+
+      const aliceMsgs = await httpRequest(mobilePortB, 'GET', `/api/messages/${encodeURIComponent(dmConv.id)}`, {
+        token: alicePortalTok,
+      });
+      assert.strictEqual(aliceMsgs.status, 200);
+      assert(aliceMsgs.data.messages.some((m) => m.body === 'Hello Bob (edited)'), 'Alice reads synced DM history');
+
+      // Alice accesses her own private /Finance folder WITHOUT needing folder password unlock
+      const finListAlice = await httpRequest(mobilePortB, 'GET', '/api/vault/list?path=Finance', {
+        token: alicePortalTok,
+      });
+      assert.strictEqual(finListAlice.status, 200);
+      assert(finListAlice.data.items.some((i) => i.rel_path === 'Finance/Budget2026.txt'));
+
+      const finPreviewAlice = await httpRequest(
+        mobilePortB,
+        'GET',
+        '/api/vault/preview?path=Finance%2FBudget2026.txt',
+        { token: alicePortalTok }
+      );
+      assert.strictEqual(finPreviewAlice.status, 200);
+      assert.strictEqual(finPreviewAlice.data.text, 'ALICE_CONFIDENTIAL_BUDGET_2026');
+
+      // Bob on the exact same PC B is still locked out of /Finance
+      const finListBob = await httpRequest(mobilePortB, 'GET', '/api/vault/list?path=Finance', {
+        token: mobileB.sessionToken,
+      });
+      assert.strictEqual(finListBob.status, 403);
+      assert.strictEqual(finListBob.data.code, 'LOCKED');
+
+      // Alice logs out of PC B's portal -> token revoked
+      const aliceLogout = await httpRequest(mobilePortB, 'POST', '/api/auth/logout', {
+        token: alicePortalTok,
+      });
+      assert.strictEqual(aliceLogout.status, 200);
+      const afterLogoutBoot = await httpRequest(mobilePortB, 'GET', '/api/bootstrap', { token: alicePortalTok });
+      assert.strictEqual(afterLogoutBoot.status, 401);
+
+      // Bring Peer A back online for subsequent suites
+      await meshA.start();
+      mobileA = new MobileServer({
+        db: dbA,
+        meshNetwork: meshA,
+        sandboxManager: sandboxA,
+        vaultPaths: vaultA,
+        port: 0,
+      });
+      mobilePortA = await mobileA.start();
+      await waitFor(
+        () => meshA.getStatus().onlineCount >= 1 && meshB.getStatus().onlineCount >= 1,
+        { desc: 'Peer A and Peer B reconnected after Suite 14' }
+      );
+    });
+
+    // -------------------------------------------------------------------------
+    // 15. Standalone Mobile Accounts + Cross-Gateway DM + Privacy Isolation + Roam
+    // -------------------------------------------------------------------------
+    let mobile1Uuid;
+    let mobile2Uuid;
+    let mobile1RecoveryCode;
+    let dmM1M2Id;
+    await runStep('15. Standalone Mobile Accounts + Cross-Gateway DM + Privacy Isolation + Logout & Roam', async () => {
+      // Register M1 on Gateway A
+      const regM1 = await httpRequest(mobilePortA, 'POST', '/api/auth/register', {
+        body: {
+          name: 'Sara Phone',
+          avatar: 'color:#4f46e5',
+          pin: '1122',
+          securityQuestion: 'Favorite color?',
+          securityAnswer: 'Emerald',
+        },
+      });
+      assert.strictEqual(regM1.status, 200);
+      assert.strictEqual(regM1.data.ok, true);
+      assert.strictEqual(regM1.data.mode, 'portal');
+      assert(RECOVERY_CODE_RE.test(regM1.data.recoveryCode), 'Must generate 6-char recoveryCode');
+      assert.strictEqual(regM1.data.identity.device_type, 'mobile');
+      mobile1Uuid = regM1.data.identity.uuid;
+      mobile1RecoveryCode = regM1.data.recoveryCode;
+      let tokM1 = regM1.data.token;
+
+      // Register M2 on Gateway B
+      const regM2 = await httpRequest(mobilePortB, 'POST', '/api/auth/register', {
+        body: {
+          name: 'Omar Phone',
+          avatar: 'color:#10b981',
+          pin: '3344',
+          securityQuestion: 'Hometown?',
+          securityAnswer: 'Alexandria',
+        },
+      });
+      assert.strictEqual(regM2.status, 200);
+      mobile2Uuid = regM2.data.identity.uuid;
+      const tokM2 = regM2.data.token;
+
+      // Wait until M1 and M2 are synced across both PCs
+      await waitFor(
+        () =>
+          dbB.getPeer(mobile1Uuid)?.device_type === 'mobile' &&
+          dbA.getPeer(mobile2Uuid)?.device_type === 'mobile',
+        { desc: 'Mobile accounts synced across PC A and PC B' }
+      );
+
+      // Connect WebSockets for M1 (Gateway A), M2 (Gateway B), and Alice (Gateway A linked)
+      const eventsM2 = [];
+      const eventsAlice = [];
+      const wsM1 = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${mobilePortA}/ws?token=${tokM1}`);
+        ws.once('open', () => resolve(ws));
+        ws.once('error', reject);
+      });
+      const wsM2 = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${mobilePortB}/ws?token=${tokM2}`);
+        ws.once('open', () => resolve(ws));
+        ws.once('error', reject);
+        ws.on('message', (raw) => {
+          try { eventsM2.push(JSON.parse(raw.toString('utf8'))); } catch (_) {}
+        });
+      });
+      const wsAlice = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${mobilePortA}/ws?token=${mobileA.sessionToken}`);
+        ws.once('open', () => resolve(ws));
+        ws.once('error', reject);
+        ws.on('message', (raw) => {
+          try { eventsAlice.push(JSON.parse(raw.toString('utf8'))); } catch (_) {}
+        });
+      });
+
+      // M1 starts DM with M2 and sends private message
+      const dmCreateRes = await httpRequest(mobilePortA, 'POST', '/api/conversations/dm', {
+        token: tokM1,
+        body: { peerUuid: mobile2Uuid },
+      });
+      assert.strictEqual(dmCreateRes.status, 200);
+      dmM1M2Id = dmCreateRes.data.conversation.id;
+
+      const sendM1 = await httpRequest(mobilePortA, 'POST', '/api/messages', {
+        token: tokM1,
+        body: { conversationId: dmM1M2Id, type: 'text', body: 'Private mobile greeting' },
+      });
+      assert.strictEqual(sendM1.status, 200);
+      const msgM1Id = sendM1.data.message.id;
+
+      // M2 receives live chat:message push over Gateway B WS
+      await waitFor(
+        () => eventsM2.some((e) => e.event === 'chat:message' && e.data?.id === msgM1Id),
+        { desc: 'M2 receives cross-gateway mobile message via WS' }
+      );
+
+      // M1 edits message -> synced to M2
+      const editM1 = await httpRequest(mobilePortA, 'PUT', `/api/messages/${msgM1Id}`, {
+        token: tokM1,
+        body: { body: 'Private mobile greeting (edited)' },
+      });
+      assert.strictEqual(editM1.status, 200);
+      await waitFor(
+        () => eventsM2.some((e) => e.event === 'chat:edit' && e.data?.body === 'Private mobile greeting (edited)'),
+        { desc: 'M2 receives gateway-relayed chat:edit' }
+      );
+
+      // M2 reacts ❤️ -> synced back to M1
+      const reactM2 = await httpRequest(mobilePortB, 'POST', `/api/messages/${msgM1Id}/reaction`, {
+        token: tokM2,
+        body: { emoji: '❤️' },
+      });
+      assert.strictEqual(reactM2.status, 200);
+      await waitFor(
+        () => dbA.getMessageById(msgM1Id)?.reactions?.some((r) => r.peer_uuid === mobile2Uuid && r.emoji === '❤️'),
+        { desc: 'Reaction synced from M2 (PC B) to PC A' }
+      );
+
+      // M1 sends & deletes a second message -> synced to M2
+      const sendM1Temp = await httpRequest(mobilePortA, 'POST', '/api/messages', {
+        token: tokM1,
+        body: { conversationId: dmM1M2Id, type: 'text', body: 'Temp mobile secret' },
+      });
+      const msgTempId = sendM1Temp.data.message.id;
+      await waitFor(() => dbB.getMessageById(msgTempId), { desc: 'Second mobile msg replicated to PC B' });
+
+      const delM1 = await httpRequest(mobilePortA, 'DELETE', `/api/messages/${msgTempId}`, {
+        token: tokM1,
+      });
+      assert.strictEqual(delM1.status, 200);
+      await waitFor(
+        () => Boolean(dbB.getMessageById(msgTempId)?.deleted_at),
+        { desc: 'Gateway-relayed soft delete synced to PC B' }
+      );
+
+      // STRICT DESKTOP PRIVACY ISOLATION CHECKS
+      assert.strictEqual(
+        dbA.getConversations(idA.uuid).some((c) => c.id === dmM1M2Id),
+        false,
+        'Desktop Alice must NOT see M1<->M2 private conversation'
+      );
+      assert.strictEqual(
+        dbB.getConversations(idB.uuid).some((c) => c.id === dmM1M2Id),
+        false,
+        'Desktop Bob must NOT see M1<->M2 private conversation'
+      );
+      assert.strictEqual(
+        dbA.getMessages(dmM1M2Id, { actorUuid: idA.uuid }).length,
+        0,
+        'dbA.getMessages for Alice must return 0 private mobile messages'
+      );
+      assert.strictEqual(
+        dbB.getMessages(dmM1M2Id, { actorUuid: idB.uuid }).length,
+        0,
+        'dbB.getMessages for Bob must return 0 private mobile messages'
+      );
+      assert.strictEqual(
+        eventsAlice.some((e) => e.event?.startsWith('chat:') && (e.data?.conversation_id === dmM1M2Id || e.data?.conversationId === dmM1M2Id)),
+        false,
+        'Alice WS must receive ZERO chat:* events for M1<->M2 conversation'
+      );
+      const aliceSpyRes = await httpRequest(mobilePortA, 'GET', `/api/messages/${encodeURIComponent(dmM1M2Id)}`, {
+        token: mobileA.sessionToken,
+      });
+      assert.strictEqual(aliceSpyRes.status, 403, 'Non-member Alice cannot read M1<->M2 messages via REST');
+
+      // M1 logs out of Gateway A and roams to Gateway B, recovering 100% of chats
+      const logoutM1 = await httpRequest(mobilePortA, 'POST', '/api/auth/logout', { token: tokM1 });
+      assert.strictEqual(logoutM1.status, 200);
+      try { wsM1.terminate(); } catch (_) {}
+      try { wsM2.terminate(); } catch (_) {}
+      try { wsAlice.terminate(); } catch (_) {}
+
+      await waitFor(
+        () => dbB.getPeer(mobile1Uuid)?.status === 'offline',
+        { desc: 'M1 marked offline on PC B after logout on PC A' }
+      );
+
+      const roamLoginM1 = await httpRequest(mobilePortB, 'POST', '/api/auth/login', {
+        body: { uuid: mobile1Uuid, pin: '1122' },
+      });
+      assert.strictEqual(roamLoginM1.status, 200);
+      tokM1 = roamLoginM1.data.token;
+
+      const bootM1OnB = await httpRequest(mobilePortB, 'GET', '/api/bootstrap', { token: tokM1 });
+      assert.strictEqual(bootM1OnB.status, 200);
+      assert(bootM1OnB.data.conversations.some((c) => c.id === dmM1M2Id));
+
+      const msgsM1OnB = await httpRequest(mobilePortB, 'GET', `/api/messages/${encodeURIComponent(dmM1M2Id)}`, {
+        token: tokM1,
+      });
+      assert.strictEqual(msgsM1OnB.status, 200);
+      assert.strictEqual(msgsM1OnB.data.messages.length, 2);
+      assert.strictEqual(msgsM1OnB.data.messages[0].body, 'Private mobile greeting (edited)');
+      assert(msgsM1OnB.data.messages[0].reactions.some((r) => r.emoji === '❤️'));
+      assert(Boolean(msgsM1OnB.data.messages[1].deleted_at));
+
+      await httpRequest(mobilePortB, 'POST', '/api/auth/logout', { token: tokM1 });
+      await httpRequest(mobilePortB, 'POST', '/api/auth/logout', { token: tokM2 });
+    });
+
+    // -------------------------------------------------------------------------
+    // 16. Offline Forgot PIN Recovery (security_qa + 6-char recovery_code)
+    // -------------------------------------------------------------------------
+    await runStep('16. Offline Forgot PIN Recovery (security_qa + 6-char recovery_code) + cross-PC sync', async () => {
+      // Desktop account recovery-info returns 400
+      const deskRecInfo = await httpRequest(mobilePortB, 'GET', `/api/auth/recovery-info/${idA.uuid}`);
+      assert.strictEqual(deskRecInfo.status, 400);
+
+      // Mobile account recovery-info returns metadata
+      const mobRecInfo = await httpRequest(mobilePortB, 'GET', `/api/auth/recovery-info/${mobile1Uuid}`);
+      assert.strictEqual(mobRecInfo.status, 200);
+      assert.strictEqual(mobRecInfo.data.ok, true);
+      assert.strictEqual(mobRecInfo.data.device_type, 'mobile');
+      assert.strictEqual(mobRecInfo.data.securityQuestion, 'Favorite color?');
+      assert.strictEqual(mobRecInfo.data.hasSecurityQA, true);
+      assert.strictEqual(mobRecInfo.data.hasRecoveryCode, true);
+
+      // Wrong security answer returns 403 INVALID_CREDENTIALS
+      const badQaRes = await httpRequest(mobilePortB, 'POST', '/api/auth/recover-pin', {
+        body: {
+          uuid: mobile1Uuid,
+          method: 'security_qa',
+          answerOrCode: 'WrongColor',
+          newPin: '5566',
+        },
+      });
+      assert.strictEqual(badQaRes.status, 403);
+      assert.strictEqual(badQaRes.data.code, 'INVALID_CREDENTIALS');
+
+      // Recover PIN via security_qa on PC B
+      const qaRecRes = await httpRequest(mobilePortB, 'POST', '/api/auth/recover-pin', {
+        body: {
+          uuid: mobile1Uuid,
+          method: 'security_qa',
+          answerOrCode: '  EMERALD  ',
+          newPin: '5566',
+        },
+      });
+      assert.strictEqual(qaRecRes.status, 200);
+      assert.strictEqual(qaRecRes.data.ok, true);
+      assert.strictEqual(qaRecRes.data.mode, 'portal');
+      await httpRequest(mobilePortB, 'POST', '/api/auth/logout', { token: qaRecRes.data.token });
+
+      // Wait for updated PIN hash to sync back to PC A
+      await waitFor(
+        () => dbA.getPeer(mobile1Uuid)?.pin_hash === dbB.getPeer(mobile1Uuid)?.pin_hash,
+        { desc: 'Recovered PIN hash synced from PC B to PC A' }
+      );
+
+      // Old PIN fails, new PIN works on PC A
+      const oldPinFail = await httpRequest(mobilePortA, 'POST', '/api/auth/login', {
+        body: { uuid: mobile1Uuid, pin: '1122' },
+      });
+      assert.strictEqual(oldPinFail.status, 401);
+
+      const newPinOk = await httpRequest(mobilePortA, 'POST', '/api/auth/login', {
+        body: { uuid: mobile1Uuid, pin: '5566' },
+      });
+      assert.strictEqual(newPinOk.status, 200);
+      await httpRequest(mobilePortA, 'POST', '/api/auth/logout', { token: newPinOk.data.token });
+
+      // Recover PIN via 6-char recovery_code on PC A (case-insensitive)
+      const codeRecRes = await httpRequest(mobilePortA, 'POST', '/api/auth/recover-pin', {
+        body: {
+          uuid: mobile1Uuid,
+          method: 'recovery_code',
+          answerOrCode: mobile1RecoveryCode.toLowerCase(),
+          newPin: '7788',
+        },
+      });
+      assert.strictEqual(codeRecRes.status, 200);
+      assert.strictEqual(codeRecRes.data.ok, true);
+      await httpRequest(mobilePortA, 'POST', '/api/auth/logout', { token: codeRecRes.data.token });
+
+      await waitFor(
+        () => dbB.getPeer(mobile1Uuid)?.pin_hash === dbA.getPeer(mobile1Uuid)?.pin_hash,
+        { desc: 'Recovery-code PIN hash synced from PC A to PC B' }
+      );
+
+      const verifyOnB = await httpRequest(mobilePortB, 'POST', '/api/auth/login', {
+        body: { uuid: mobile1Uuid, pin: '7788' },
+      });
+      assert.strictEqual(verifyOnB.status, 200);
+      await httpRequest(mobilePortB, 'POST', '/api/auth/logout', { token: verifyOnB.data.token });
+    });
+
+    // -------------------------------------------------------------------------
+    // 17. Dual-Tab getPairingInfo() + REST Message Edit/Delete Owner vs 403 Non-Owner
+    // -------------------------------------------------------------------------
+    await runStep('17. Dual-Tab getPairingInfo() (quickLink vs portal) + REST Edit/Delete Ownership Checks', async () => {
+      const pairing = await mobileA.getPairingInfo();
+      assert.strictEqual(pairing.ok, true);
+      assert(pairing.primaryUrl.includes(`?mode=linked&token=${mobileA.sessionToken}`));
+      assert(pairing.qrDataUrl.startsWith('data:image/png;base64,'));
+      assert(pairing.quickLink && pairing.quickLink.primaryUrl.includes(`?mode=linked&token=${mobileA.sessionToken}`));
+      assert(pairing.quickLink.qrDataUrl.startsWith('data:image/png;base64,'));
+      assert(Array.isArray(pairing.quickLink.adapters) && pairing.quickLink.adapters.length >= 1);
+
+      assert(pairing.portal && pairing.portal.primaryUrl.includes('?mode=portal'));
+      assert(!pairing.portal.primaryUrl.includes('token='), 'Portal URL must NOT embed a session token');
+      assert(pairing.portal.qrDataUrl.startsWith('data:image/png;base64,'));
+      assert(
+        Array.isArray(pairing.portal.adapters) &&
+          pairing.portal.adapters.every((a) => a.url.includes('?mode=portal') && !a.url.includes('token=')),
+        'All portal adapter URLs must omit token'
+      );
+
+      const iconRes = await httpRequest(mobilePortA, 'GET', '/icon.svg');
+      assert.strictEqual(iconRes.status, 200);
+      assert(iconRes.raw.includes('<svg'));
+
+      const manifestRes = await httpRequest(mobilePortA, 'GET', '/manifest.json');
+      assert.strictEqual(manifestRes.status, 200);
+      assert.strictEqual(manifestRes.data.name, 'TwinSync Pro');
+      assert.strictEqual(manifestRes.data.short_name, 'TwinSync');
+
+      // REST Edit/Delete owner vs 403 non-owner checks
+      const loginM1 = await httpRequest(mobilePortA, 'POST', '/api/auth/login', {
+        body: { uuid: mobile1Uuid, pin: '7788' },
+      });
+      const loginM2 = await httpRequest(mobilePortB, 'POST', '/api/auth/login', {
+        body: { uuid: mobile2Uuid, pin: '3344' },
+      });
+      const tok1 = loginM1.data.token;
+      const tok2 = loginM2.data.token;
+
+      const sent = await httpRequest(mobilePortA, 'POST', '/api/messages', {
+        token: tok1,
+        body: { conversationId: dmM1M2Id, type: 'text', body: 'Owner message only' },
+      });
+      assert.strictEqual(sent.status, 200);
+      const targetMsgId = sent.data.message.id;
+
+      await waitFor(() => dbB.getMessageById(targetMsgId), { desc: 'Owner check message synced to PC B' });
+
+      // Non-owner M2 denied edit & delete with 403
+      const hijackEdit = await httpRequest(mobilePortB, 'PUT', `/api/messages/${targetMsgId}`, {
+        token: tok2,
+        body: { body: 'Tampered by M2' },
+      });
+      assert.strictEqual(hijackEdit.status, 403);
+
+      const hijackDelete = await httpRequest(mobilePortB, 'DELETE', `/api/messages/${targetMsgId}`, {
+        token: tok2,
+      });
+      assert.strictEqual(hijackDelete.status, 403);
+      assert.strictEqual(dbB.getMessageById(targetMsgId).body, 'Owner message only');
+
+      // Owner M1 succeeds in editing and deleting
+      const ownerEdit = await httpRequest(mobilePortA, 'PUT', `/api/messages/${targetMsgId}`, {
+        token: tok1,
+        body: { body: 'Edited cleanly by M1' },
+      });
+      assert.strictEqual(ownerEdit.status, 200);
+      assert.strictEqual(ownerEdit.data.message.body, 'Edited cleanly by M1');
+
+      const ownerDelete = await httpRequest(mobilePortA, 'DELETE', `/api/messages/${targetMsgId}`, {
+        token: tok1,
+      });
+      assert.strictEqual(ownerDelete.status, 200);
+      assert(Boolean(ownerDelete.data.message.deleted_at));
+
+      await httpRequest(mobilePortA, 'POST', '/api/auth/logout', { token: tok1 });
+      await httpRequest(mobilePortB, 'POST', '/api/auth/logout', { token: tok2 });
+    });
+
     console.log(`\nALL ${passed} INTEGRATION TEST SUITES PASSED (100%)!`);
   } finally {
     try { if (sandboxA) await sandboxA.cleanupAll(); } catch (_) {}
     try { if (sandboxB) await sandboxB.cleanupAll(); } catch (_) {}
     try { if (mobileA) await mobileA.stop(); } catch (_) {}
+    try { if (mobileB) await mobileB.stop(); } catch (_) {}
     try { if (meshA) await meshA.stop(); } catch (_) {}
     try { if (meshB) await meshB.stop(); } catch (_) {}
     try { dbA.close(); } catch (_) {}

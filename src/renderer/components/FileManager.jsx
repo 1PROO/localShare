@@ -44,7 +44,9 @@ import {
   CheckCircle2,
   SlidersHorizontal
 } from 'lucide-react';
-import { UserAvatar } from './OnboardingModal';
+import { UserAvatar, DeviceTypeBadge } from './OnboardingModal';
+
+const getApi = () => window.twinsync || window.workmesh;
 
 function formatBytes(bytes) {
   const n = Number(bytes) || 0;
@@ -304,10 +306,11 @@ export default function FileManager({
 
   const loadDirectory = useCallback(
     async (targetPath, opts = {}) => {
-      if (!window.workmesh?.vaultList) return null;
+      const api = getApi();
+      if (!api?.vaultList) return null;
       setLoading(true);
       try {
-        const res = await window.workmesh.vaultList(targetPath || '');
+        const res = await api.vaultList(targetPath || '');
         if (res?.locked && res?.blockingAncestor) {
           setLoading(false);
           setUnlockModal({
@@ -351,9 +354,11 @@ export default function FileManager({
       setSearchResults(null);
       return;
     }
+    const api = getApi();
+    if (!api?.vaultSearch) return undefined;
     let active = true;
     setLoading(true);
-    window.workmesh
+    api
       .vaultSearch(debouncedSearch)
       .then((res) => {
         if (!active) return;
@@ -372,13 +377,14 @@ export default function FileManager({
   }, [debouncedSearch, onToast, t]);
 
   const loadPreview = useCallback(async (relPath) => {
-    if (!relPath || !window.workmesh?.vaultGetPreview) {
+    const api = getApi();
+    if (!relPath || !api?.vaultGetPreview) {
       setPreviewData(null);
       return;
     }
     setLoadingPreview(true);
     try {
-      const res = await window.workmesh.vaultGetPreview(relPath);
+      const res = await api.vaultGetPreview(relPath);
       setPreviewData(res || null);
     } catch {
       setPreviewData(null);
@@ -397,11 +403,12 @@ export default function FileManager({
 
   // Real-time event subscriptions
   useEffect(() => {
-    if (!window.workmesh?.onEvent) return undefined;
+    const api = getApi();
+    if (!api?.onEvent) return undefined;
     const unsubs = [];
 
     unsubs.push(
-      window.workmesh.onEvent('vault:changed', () => {
+      api.onEvent('vault:changed', () => {
         loadDirectory(currentPathRef.current);
         if (selectedRelRef.current && showPreviewPane) {
           loadPreview(selectedRelRef.current);
@@ -410,7 +417,7 @@ export default function FileManager({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('vault:remote-updated', (payload) => {
+      api.onEvent('vault:remote-updated', (payload) => {
         loadDirectory(currentPathRef.current);
         if (
           payload?.relPath &&
@@ -423,7 +430,7 @@ export default function FileManager({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('presence:changed', (payload) => {
+      api.onEvent('presence:changed', (payload) => {
         if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
           setLocalPresenceMap(payload.presenceMap || payload);
         }
@@ -431,7 +438,7 @@ export default function FileManager({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('sandbox:sessions-changed', (sessions) => {
+      api.onEvent('sandbox:sessions-changed', (sessions) => {
         if (Array.isArray(sessions)) {
           setLocalSessions(sessions);
         }
@@ -560,7 +567,7 @@ export default function FileManager({
       }
 
       try {
-        const res = await window.workmesh.vaultOpenFile(node.rel_path, opts);
+        const res = await getApi().vaultOpenFile(node.rel_path, opts);
         if (res?.ok) {
           onToast?.(`${t('open')}: ${res.fileName || node.name}`, 'info');
           return;
@@ -602,7 +609,7 @@ export default function FileManager({
     const name = newFolderName.trim();
     if (!name) return;
     try {
-      const res = await window.workmesh.vaultCreateFolder(currentPath, name);
+      const res = await getApi().vaultCreateFolder(currentPath, name);
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
       }
@@ -623,7 +630,7 @@ export default function FileManager({
       return;
     }
     try {
-      const res = await window.workmesh.vaultRename(
+      const res = await getApi().vaultRename(
         renameModal.node.rel_path,
         nextName
       );
@@ -647,7 +654,7 @@ export default function FileManager({
     async (node) => {
       if (!node) return;
       try {
-        const res = await window.workmesh.vaultDeleteToTrash(node.rel_path);
+        const res = await getApi().vaultDeleteToTrash(node.rel_path);
         if (res && res.ok === false) {
           if (res.code === 'FILE_LOCKED_LIVE_EDIT') {
             setLiveEditBlockedModal({ editors: res.editors || [] });
@@ -671,7 +678,7 @@ export default function FileManager({
   const handleMoveOrCopy = useCallback(
     async (op, sourcePaths, targetParentPath, strategy = 'prompt') => {
       try {
-        const res = await window.workmesh.vaultMoveOrCopy(
+        const res = await getApi().vaultMoveOrCopy(
           op,
           sourcePaths,
           targetParentPath,
@@ -714,7 +721,7 @@ export default function FileManager({
 
   const handleUploadFromDialog = async () => {
     try {
-      const res = await window.workmesh.vaultUploadFromDialog(currentPath);
+      const res = await getApi().vaultUploadFromDialog(currentPath);
       if (res?.canceled) return;
       if (res?.conflict) {
         setConflictModal({
@@ -737,7 +744,7 @@ export default function FileManager({
 
   const handleUploadOsPaths = async (osPaths, targetFolder, strategy = 'prompt') => {
     try {
-      const res = await window.workmesh.vaultUploadOsPaths(
+      const res = await getApi().vaultUploadOsPaths(
         osPaths,
         targetFolder,
         strategy
@@ -765,7 +772,7 @@ export default function FileManager({
   const handleSaveCopyAs = async (node) => {
     if (!node) return;
     try {
-      const res = await window.workmesh.vaultSaveCopyAs(node.rel_path);
+      const res = await getApi().vaultSaveCopyAs(node.rel_path);
       if (res?.canceled) return;
       if (res?.code === 'LOCKED' && res?.blockingAncestor) {
         setUnlockModal({
@@ -813,7 +820,7 @@ export default function FileManager({
     if (!permModal?.node) return;
     setPermModal((prev) => (prev ? { ...prev, saving: true } : null));
     try {
-      const res = await window.workmesh.vaultUpdatePermissions(
+      const res = await getApi().vaultUpdatePermissions(
         permModal.node.rel_path,
         {
           permMode: permModal.permMode,
@@ -839,7 +846,7 @@ export default function FileManager({
     if (!node) return;
     setPropsModal({ loading: true, node, ownerName: '', effectiveAcl: null, auditLogs: [] });
     try {
-      const res = await window.workmesh.vaultGetProperties(node.rel_path);
+      const res = await getApi().vaultGetProperties(node.rel_path);
       if (res?.code === 'LOCKED' && res?.blockingAncestor) {
         setPropsModal(null);
         setUnlockModal({
@@ -876,7 +883,7 @@ export default function FileManager({
   const handleOpenSendToChat = async (node) => {
     if (!node) return;
     try {
-      const permRes = await window.workmesh.checkVaultSharePermission(node.rel_path);
+      const permRes = await getApi().checkVaultSharePermission(node.rel_path);
       setSendChatModal({
         node,
         isProtected: Boolean(permRes?.isProtected ?? node.isProtected),
@@ -899,14 +906,14 @@ export default function FileManager({
     try {
       let convId = sendChatModal.targetConvId;
       if (!convId && sendChatModal.targetPeerUuid) {
-        const dmRes = await window.workmesh.ensureDm(sendChatModal.targetPeerUuid);
+        const dmRes = await getApi().ensureDm(sendChatModal.targetPeerUuid);
         convId = dmRes?.conversation?.id || dmRes?.id || '';
       }
       if (!convId) {
         throw new Error(t('chatSelectPeer'));
       }
 
-      const res = await window.workmesh.shareVaultItemToChat({
+      const res = await getApi().shareVaultItemToChat({
         conversationId: convId,
         relPath: sendChatModal.node.rel_path,
         mode: sendChatModal.isProtected ? sendChatModal.mode : 'deeplink',
@@ -963,7 +970,7 @@ export default function FileManager({
     e.preventDefault();
     if (!unlockModal?.blockingPath) return;
     try {
-      const res = await window.workmesh.vaultUnlockFolder(
+      const res = await getApi().vaultUnlockFolder(
         unlockModal.blockingPath,
         unlockModal.password
       );
@@ -986,7 +993,7 @@ export default function FileManager({
   const handleOpenRecovery = async () => {
     if (!unlockModal?.blockingPath) return;
     try {
-      const info = await window.workmesh.vaultGetRecoveryInfo(
+      const info = await getApi().vaultGetRecoveryInfo(
         unlockModal.blockingPath
       );
       setUnlockModal((prev) =>
@@ -1012,7 +1019,7 @@ export default function FileManager({
       prev ? { ...prev, recovering: true, error: '' } : null
     );
     try {
-      const res = await window.workmesh.vaultRecoverPassword(
+      const res = await getApi().vaultRecoverPassword(
         unlockModal.blockingPath,
         {
           method: unlockModal.method,
@@ -1033,7 +1040,7 @@ export default function FileManager({
         return;
       }
       if (unlockModal.newPassword) {
-        await window.workmesh.vaultUnlockFolder(
+        await getApi().vaultUnlockFolder(
           unlockModal.blockingPath,
           unlockModal.newPassword
         );
@@ -1160,7 +1167,9 @@ export default function FileManager({
     setDropTargetPath(null);
     setOsDropActive(false);
 
-    const vaultRaw = e.dataTransfer?.getData('application/x-workmesh-vault');
+    const vaultRaw =
+      e.dataTransfer?.getData('application/x-twinsync-vault') ||
+      e.dataTransfer?.getData('application/x-workmesh-vault');
     if (vaultRaw) {
       try {
         const dragged = JSON.parse(vaultRaw);
@@ -1413,7 +1422,11 @@ export default function FileManager({
               loadDirectory('');
             }}
             onDragOver={(e) => {
-              if (e.dataTransfer?.types?.includes('application/x-workmesh-vault')) {
+              const types = e.dataTransfer?.types;
+              if (
+                types?.includes('application/x-twinsync-vault') ||
+                types?.includes('application/x-workmesh-vault')
+              ) {
                 e.preventDefault();
                 if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
                 setDropTargetPath('__root__');
@@ -1448,7 +1461,11 @@ export default function FileManager({
                     loadDirectory(segPath);
                   }}
                   onDragOver={(e) => {
-                    if (e.dataTransfer?.types?.includes('application/x-workmesh-vault')) {
+                    const types = e.dataTransfer?.types;
+                    if (
+                      types?.includes('application/x-twinsync-vault') ||
+                      types?.includes('application/x-workmesh-vault')
+                    ) {
                       e.preventDefault();
                       if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
                       setDropTargetPath(segPath);
@@ -1507,7 +1524,7 @@ export default function FileManager({
               </span>
               <button
                 type="button"
-                onClick={() => window.workmesh.vaultCloseSandboxSession(sess.sessionId)}
+                onClick={() => getApi()?.vaultCloseSandboxSession(sess.sessionId)}
                 title={t('vaultCloseSession')}
                 className="text-slate-400 hover:text-rose-500 transition"
               >
@@ -1566,7 +1583,7 @@ export default function FileManager({
                     draggable
                     onDragStart={(e) => {
                       e.dataTransfer.setData(
-                        'application/x-workmesh-vault',
+                        'application/x-twinsync-vault',
                         JSON.stringify({
                           relPath: node.rel_path,
                           name: node.name,
@@ -1579,6 +1596,7 @@ export default function FileManager({
                       if (!node.is_dir) return;
                       const types = Array.from(e.dataTransfer?.types || []);
                       if (
+                        types.includes('application/x-twinsync-vault') ||
                         types.includes('application/x-workmesh-vault') ||
                         types.includes('Files')
                       ) {
@@ -1684,7 +1702,7 @@ export default function FileManager({
                         draggable
                         onDragStart={(e) => {
                           e.dataTransfer.setData(
-                            'application/x-workmesh-vault',
+                            'application/x-twinsync-vault',
                             JSON.stringify({
                               relPath: node.rel_path,
                               name: node.name,
@@ -1697,6 +1715,7 @@ export default function FileManager({
                           if (!node.is_dir) return;
                           const types = Array.from(e.dataTransfer?.types || []);
                           if (
+                            types.includes('application/x-twinsync-vault') ||
                             types.includes('application/x-workmesh-vault') ||
                             types.includes('Files')
                           ) {
@@ -2827,9 +2846,10 @@ export default function FileManager({
                                 });
                               }}
                             />
-                            <span className="truncate text-slate-700 dark:text-slate-200">
+                            <span className="truncate text-slate-700 dark:text-slate-200 flex-1">
                               {peer.display_name}
                             </span>
+                            <DeviceTypeBadge deviceType={peer.device_type} t={t} />
                           </label>
                         );
                       })}
@@ -2866,9 +2886,10 @@ export default function FileManager({
                                 });
                               }}
                             />
-                            <span className="truncate text-slate-700 dark:text-slate-200">
+                            <span className="truncate text-slate-700 dark:text-slate-200 flex-1">
                               {peer.display_name}
                             </span>
+                            <DeviceTypeBadge deviceType={peer.device_type} t={t} />
                           </label>
                         );
                       })}
@@ -3117,6 +3138,10 @@ export default function FileManager({
                     conv.type === 'group'
                       ? conv.name
                       : conv.peer?.display_name || conv.name || t('unknown');
+                  const dmPeer =
+                    conv.type === 'dm' && conv.peer
+                      ? peers.find((p) => p.uuid === conv.peer.uuid) || conv.peer
+                      : null;
                   return (
                     <button
                       key={conv.id}
@@ -3134,7 +3159,12 @@ export default function FileManager({
                           : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200'
                       }`}
                     >
-                      <span className="truncate">{title}</span>
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate">{title}</span>
+                        {conv.type === 'dm' && (
+                          <DeviceTypeBadge deviceType={dmPeer?.device_type} t={t} />
+                        )}
+                      </span>
                       {selected && <CheckCircle2 className="w-4 h-4 shrink-0" strokeWidth={1.5} />}
                     </button>
                   );
@@ -3170,6 +3200,7 @@ export default function FileManager({
                             size="sm"
                           />
                           <span className="truncate">{peer.display_name}</span>
+                          <DeviceTypeBadge deviceType={peer.device_type} t={t} />
                         </div>
                         {selected && <CheckCircle2 className="w-4 h-4 shrink-0" strokeWidth={1.5} />}
                       </button>

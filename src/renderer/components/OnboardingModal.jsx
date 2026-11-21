@@ -9,12 +9,14 @@ import {
   User,
   HelpCircle,
   Lock,
-  Sparkles,
+  Smartphone,
+  Monitor,
   Sun,
   Moon,
   Languages,
   AlertTriangle
 } from 'lucide-react';
+import { TwinSyncLogo } from './TwinSyncLogo';
 
 export const SECURITY_QUESTION_KEYS = [
   'securityQ1',
@@ -61,6 +63,66 @@ export function resizeImageToDataUrl(file, maxDim = 160, quality = 0.82) {
 }
 
 /**
+ * Copy text reliably across Electron, HTTPS, and LAN HTTP origins using a hidden textarea fallback.
+ */
+export async function copyTextSafe(text) {
+  const str = String(text ?? '');
+  if (!str) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(str);
+      return true;
+    } catch {
+      // Fallback below
+    }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = str;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return Boolean(ok);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Device type indicator badge (mobile smartphone vs desktop monitor).
+ */
+export function DeviceTypeBadge({ deviceType = 'desktop', t, className = '' }) {
+  const isMobile = deviceType === 'mobile';
+  const label = isMobile
+    ? (t ? t('deviceMobile') : 'Mobile Device')
+    : (t ? t('deviceDesktop') : 'Desktop PC');
+
+  return (
+    <span
+      title={label}
+      aria-label={label}
+      className={`inline-flex items-center justify-center shrink-0 ${
+        isMobile
+          ? 'text-emerald-600 dark:text-emerald-400'
+          : 'text-indigo-500 dark:text-indigo-400'
+      } ${className}`}
+    >
+      {isMobile ? (
+        <Smartphone className="w-3 h-3" strokeWidth={1.75} />
+      ) : (
+        <Monitor className="w-3 h-3" strokeWidth={1.75} />
+      )}
+    </span>
+  );
+}
+
+/**
  * Reusable crisp avatar circle with initials fallback.
  */
 export function UserAvatar({ name, avatarData, size = 'md', className = '' }) {
@@ -70,14 +132,18 @@ export function UserAvatar({ name, avatarData, size = 'md', className = '' }) {
     lg: 'w-14 h-14 text-lg',
     xl: 'w-20 h-20 text-2xl'
   };
-  const initials = (name || 'WM')
+  const initials = (name || 'TS')
     .trim()
     .split(/\s+/)
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() || '')
-    .join('') || 'WM';
+    .join('') || 'TS';
 
-  if (avatarData) {
+  const isColorAvatar =
+    typeof avatarData === 'string' && avatarData.startsWith('color:');
+  const colorValue = isColorAvatar ? avatarData.slice(6).trim() : '';
+
+  if (avatarData && !isColorAvatar) {
     return (
       <img
         src={avatarData}
@@ -89,7 +155,10 @@ export function UserAvatar({ name, avatarData, size = 'md', className = '' }) {
 
   return (
     <div
-      className={`${sizeClasses[size] || sizeClasses.md} rounded-full bg-gradient-to-br from-indigo-500 to-emerald-500 text-white font-semibold flex items-center justify-center shadow-sm shrink-0 select-none ${className}`}
+      style={colorValue ? { backgroundColor: colorValue } : undefined}
+      className={`${sizeClasses[size] || sizeClasses.md} rounded-full ${
+        colorValue ? '' : 'bg-gradient-to-br from-indigo-500 to-emerald-500'
+      } text-white font-semibold flex items-center justify-center shadow-sm shrink-0 select-none ${className}`}
     >
       {initials}
     </div>
@@ -196,12 +265,10 @@ export default function OnboardingModal({
 
   const handleCopyKey = async () => {
     if (!masterRecoveryKey) return;
-    try {
-      await navigator.clipboard.writeText(masterRecoveryKey);
+    const ok = await copyTextSafe(masterRecoveryKey);
+    if (ok) {
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);
-    } catch {
-      // Fallback ignored if clipboard unavailable
     }
   };
 
@@ -259,9 +326,7 @@ export default function OnboardingModal({
         {/* Header */}
         <div className="px-6 py-5 bg-gradient-to-r from-indigo-600/10 via-sky-500/5 to-emerald-500/10 border-b border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-600 to-emerald-500 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
-              <Sparkles className="w-5 h-5" strokeWidth={1.5} />
-            </div>
+            <TwinSyncLogo size={44} />
             <div>
               <h1 className="text-lg font-bold text-slate-900 dark:text-white">
                 {t('onboardingTitle')}

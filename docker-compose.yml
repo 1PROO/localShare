@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: win-builder
-    image: workmesh-win-builder:latest
+    image: twinsync-pro-win-builder:latest
     environment:
       WIN_ARCH: ${WIN_ARCH:-x64}
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -16,4 +16,4 @@ services:
       context: .
       dockerfile: Dockerfile
       target: tester
-    image: workmesh-tester:latest
+    image: twinsync-pro-tester:latest

@@ -87,3 +87,78 @@
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
 }
+
+/* WhatsApp-style top-corner chat bubble tails (RTL & LTR aware) */
+.ts-bubble-tail-me,
+.ts-bubble-tail-other {
+  position: relative;
+}
+
+.ts-bubble-tail-me::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 11px;
+  background-color: #4f46e5;
+  pointer-events: none;
+}
+
+[dir="ltr"] .ts-bubble-tail-me::before {
+  right: -7px;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+[dir="rtl"] .ts-bubble-tail-me::before {
+  left: -7px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+.ts-bubble-tail-other::before,
+.ts-bubble-tail-other::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+
+.ts-bubble-tail-other::before {
+  top: -1px;
+  width: 9px;
+  height: 12px;
+  background-color: rgba(226, 232, 240, 0.9);
+}
+
+.dark .ts-bubble-tail-other::before {
+  background-color: #1e293b;
+}
+
+.ts-bubble-tail-other::after {
+  top: 0;
+  width: 8px;
+  height: 10px;
+  background-color: #ffffff;
+}
+
+.dark .ts-bubble-tail-other::after {
+  background-color: #0f172a;
+}
+
+[dir="ltr"] .ts-bubble-tail-other::before {
+  left: -8px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+[dir="ltr"] .ts-bubble-tail-other::after {
+  left: -6px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+
+[dir="rtl"] .ts-bubble-tail-other::before {
+  right: -8px;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+[dir="rtl"] .ts-bubble-tail-other::after {
+  right: -6px;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}

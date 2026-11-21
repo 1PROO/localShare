@@ -10,6 +10,7 @@ import {
   WifiOff
 } from 'lucide-react';
 import { UserAvatar } from './OnboardingModal';
+import { TwinSyncLogo } from './TwinSyncLogo';
 
 export default function NavigationRail({
   t,
@@ -68,12 +69,9 @@ export default function NavigationRail({
     >
       {/* Top brand + main nav */}
       <div className="flex flex-col items-center gap-2 w-full px-2">
-        {/* WorkMesh subtle emblem */}
-        <div
-          title={t('appName')}
-          className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-emerald-500 text-white font-bold text-sm flex items-center justify-center shadow-sm shadow-indigo-500/20 mb-2"
-        >
-          WM
+        {/* TwinSync Pro emblem */}
+        <div title={t('appName')} className="flex items-center justify-center">
+          <TwinSyncLogo size={40} className="mb-2 drop-shadow-sm" />
         </div>
 
         {navItems.map((item) => {

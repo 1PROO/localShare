@@ -14,6 +14,7 @@ const {
   normalizeRecoveryKey,
   hashSecret,
   verifySecret,
+  verifySecurityAnswerFlexible,
   normalizeRelPath,
   getParentRelPath,
   getAncestorPaths,
@@ -374,6 +375,8 @@ class MeshNetwork extends EventEmitter {
     this.activeTransfers = new Map(); // key -> Promise
     this.pendingTransfers = new Map(); // transferId -> transferState
     this._beaconCooldown = new Map(); // peerUuid -> ts
+    this.hostedMobilePeers = new Map(); // peerUuid -> count
+    this.remoteHostedPeers = new Map(); // peerUuid -> Set<gatewayUuid>
 
     this._stopped = true;
     this.identity = null;
@@ -401,7 +404,11 @@ class MeshNetwork extends EventEmitter {
     return {
       uuid: id.uuid,
       display_name: id.display_name || '',
+      name: id.display_name || '',
       avatar_data: id.avatar_data ?? null,
+      avatar: id.avatar_data ?? null,
+      device_type: 'desktop',
+      pin_hash: id.pin_hash ?? null,
       ws_port: this.wsPort,
       recovery_key_hash: id.recovery_key_hash || null,
       recovery_key_salt: id.recovery_key_salt || null,
@@ -410,6 +417,166 @@ class MeshNetwork extends EventEmitter {
       security_answer_salt: id.security_answer_salt || null,
       updated_at: id.updated_at || Date.now(),
     };
+  }
+
+  _serializePeerForSync(p) {
+    if (!p) return null;
+    const displayName = p.display_name || p.name || '';
+    const avatar = p.avatar_data !== undefined ? p.avatar_data : (p.avatar ?? null);
+    return {
+      uuid: p.uuid,
+      display_name: displayName,
+      name: p.name || displayName,
+      avatar_data: avatar,
+      avatar,
+      device_type: p.device_type || 'desktop',
+      pin_hash: p.pin_hash ?? null,
+      recovery_code_hash: p.recovery_code_hash ?? null,
+      recovery_key_hash: p.recovery_key_hash ?? null,
+      recovery_key_salt: p.recovery_key_salt ?? null,
+      security_question: p.security_question ?? null,
+      security_answer_hash: p.security_answer_hash ?? null,
+      security_answer_salt: p.security_answer_salt ?? null,
+      gateway_uuid: p.gateway_uuid ?? null,
+      updated_at: p.updated_at || 0,
+    };
+  }
+
+  _isPeerLiveOnline(peerUuid) {
+    if (!peerUuid) return false;
+    if (peerUuid === this.myUuid) return true;
+    if (this.peerSockets.has(peerUuid)) return true;
+    if (this.hostedMobilePeers.has(peerUuid)) return true;
+    const remoteGws = this.remoteHostedPeers.get(peerUuid);
+    return Boolean(remoteGws && remoteGws.size > 0);
+  }
+
+  _getActorPinHash(actorUuid) {
+    if (!actorUuid) return null;
+    const rec =
+      actorUuid === this.myUuid
+        ? this.db.getIdentity()
+        : this.db.getPeer(actorUuid);
+    return rec?.pin_hash || null;
+  }
+
+  _signActorProof(actorUuid, type, target, lamportTs) {
+    const pinHash = this._getActorPinHash(actorUuid);
+    if (!pinHash) return null;
+    return crypto
+      .createHmac('sha256', String(pinHash))
+      .update(`${type}:${actorUuid}:${target}:${lamportTs || 0}`)
+      .digest('hex');
+  }
+
+  _verifyActorProof(actorUuid, type, target, lamportTs, proofHex) {
+    if (!actorUuid || !proofHex) return false;
+    const expected = this._signActorProof(actorUuid, type, target, lamportTs);
+    if (!expected) return false;
+    try {
+      const a = Buffer.from(expected, 'hex');
+      const b = Buffer.from(String(proofHex), 'hex');
+      if (a.length === 0 || a.length !== b.length) return false;
+      return crypto.timingSafeEqual(a, b);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  _resolveEffectiveActor(senderUuid, msg, target, lamportTs) {
+    if (!msg || !msg.actorUuid || msg.actorUuid === senderUuid) {
+      return senderUuid;
+    }
+    const claimedActor = String(msg.actorUuid);
+    if (claimedActor === this.myUuid) {
+      return senderUuid;
+    }
+    const gateways = this.remoteHostedPeers.get(claimedActor);
+    if (!gateways || !gateways.has(senderUuid)) {
+      return senderUuid;
+    }
+    if (!this._verifyActorProof(claimedActor, msg.type, target, lamportTs, msg.actorProof)) {
+      return senderUuid;
+    }
+    return claimedActor;
+  }
+
+  broadcastPeerSync(peerOrUuid) {
+    const peer = typeof peerOrUuid === 'string' ? this.db.getPeer(peerOrUuid) : peerOrUuid;
+    if (!peer || !peer.uuid) return;
+    const serialized = this._serializePeerForSync(peer);
+    const hosted = this.hostedMobilePeers.has(peer.uuid);
+    this.broadcast({
+      type: 'PEER_SYNC',
+      peer: serialized,
+      hosted,
+      gatewayUuid: hosted ? this.myUuid : (peer.gateway_uuid ?? null),
+    });
+  }
+
+  registerHostedPeer(peerUuid) {
+    if (!peerUuid) return;
+    const prevCount = this.hostedMobilePeers.get(peerUuid) || 0;
+    this.hostedMobilePeers.set(peerUuid, prevCount + 1);
+    if (peerUuid === this.myUuid) return;
+
+    if (prevCount === 0) {
+      const existing = this.db.getPeer(peerUuid);
+      if (existing) {
+        const updated = this.db.upsertPeer({
+          uuid: peerUuid,
+          status: 'online',
+          last_seen: Date.now(),
+          gateway_uuid: this.myUuid,
+          updated_at: Math.max(Date.now(), (existing.updated_at || 0) + 1),
+        });
+        this.broadcast({
+          type: 'PEER_ANNOUNCE',
+          action: 'online',
+          peerUuid,
+          gatewayUuid: this.myUuid,
+          peer: this._serializePeerForSync(updated),
+        });
+        this.emit('peers:changed', this.db.getPeers());
+      }
+    }
+  }
+
+  unregisterHostedPeer(peerUuid) {
+    if (!peerUuid) return;
+    const prevCount = this.hostedMobilePeers.get(peerUuid) || 0;
+    if (prevCount > 1) {
+      this.hostedMobilePeers.set(peerUuid, prevCount - 1);
+      return;
+    }
+    this.hostedMobilePeers.delete(peerUuid);
+    if (peerUuid === this.myUuid) return;
+
+    const existing = this.db.getPeer(peerUuid);
+    const stillOnline = this._isPeerLiveOnline(peerUuid);
+    const nextGw = this.remoteHostedPeers.get(peerUuid)
+      ? (Array.from(this.remoteHostedPeers.get(peerUuid))[0] || null)
+      : null;
+
+    let updated = existing;
+    if (existing) {
+      updated = this.db.upsertPeer({
+        uuid: peerUuid,
+        status: stillOnline ? 'online' : 'offline',
+        last_seen: Date.now(),
+        gateway_uuid: existing.gateway_uuid === this.myUuid ? nextGw : existing.gateway_uuid,
+        updated_at: Math.max(Date.now(), (existing.updated_at || 0) + 1),
+      });
+    }
+
+    this.broadcast({
+      type: 'PEER_ANNOUNCE',
+      action: 'offline',
+      peerUuid,
+      gatewayUuid: this.myUuid,
+      peer: updated ? this._serializePeerForSync(updated) : null,
+    });
+    this.emit('peers:changed', this.db.getPeers());
   }
 
   async start() {
@@ -474,6 +641,8 @@ class MeshNetwork extends EventEmitter {
       } catch (_) {}
     }
     this.peerSockets.clear();
+    this.hostedMobilePeers.clear();
+    this.remoteHostedPeers.clear();
 
     if (this.udpSocket) {
       await new Promise((resolve) => {
@@ -641,6 +810,30 @@ class MeshNetwork extends EventEmitter {
       if (!this._stopped && !this.db?.closed) {
         this.db.setPeerStatus(ws._peerUuid, 'offline', Date.now());
         this._clearPeerPresence(ws._peerUuid);
+
+        // Clean up remoteHostedPeers previously hosted through this gateway PC
+        for (const [hostedUuid, gateways] of this.remoteHostedPeers.entries()) {
+          if (gateways.delete(ws._peerUuid)) {
+            if (gateways.size === 0) {
+              this.remoteHostedPeers.delete(hostedUuid);
+            }
+            if (hostedUuid !== this.myUuid) {
+              const stillOnline =
+                this.peerSockets.has(hostedUuid) ||
+                this.hostedMobilePeers.has(hostedUuid) ||
+                (this.remoteHostedPeers.get(hostedUuid)?.size > 0);
+              this.db.setPeerStatus(hostedUuid, stillOnline ? 'online' : 'offline', Date.now());
+              const cur = this.db.getPeer(hostedUuid);
+              if (cur && cur.gateway_uuid === ws._peerUuid) {
+                const nextGw = this.remoteHostedPeers.get(hostedUuid)
+                  ? (Array.from(this.remoteHostedPeers.get(hostedUuid))[0] || null)
+                  : null;
+                this.db.db.prepare('UPDATE peers SET gateway_uuid = ? WHERE uuid = ?').run(nextGw, hostedUuid);
+              }
+            }
+          }
+        }
+
         this.emit('peers:changed', this.db.getPeers());
       }
 
@@ -724,7 +917,7 @@ class MeshNetwork extends EventEmitter {
         } catch (_) {
           return;
         }
-        if (!msg || msg.app !== 'workmesh' || !msg.uuid || msg.uuid === this.myUuid) {
+        if (!msg || (msg.app !== 'twinsync' && msg.app !== 'workmesh') || !msg.uuid || msg.uuid === this.myUuid) {
           return;
         }
         const senderIp = normalizeRemoteIp(rinfo.address);
@@ -748,7 +941,7 @@ class MeshNetwork extends EventEmitter {
     const id = this.db.getIdentity() || this.identity;
     return Buffer.from(
       JSON.stringify({
-        app: 'workmesh',
+        app: 'twinsync',
         uuid: this.myUuid,
         displayName: id?.display_name || '',
         wsPort: this.wsPort,
@@ -884,7 +1077,7 @@ class MeshNetwork extends EventEmitter {
 
   _sendSyncHello(ws) {
     const pubId = this._getPublicIdentity();
-    const convs = this.db.getConversations(this.myUuid).map((c) => ({
+    const convs = this.db.getAllConversationsWithMembers().map((c) => ({
       id: c.id,
       type: c.type,
       name: c.name,
@@ -892,7 +1085,7 @@ class MeshNetwork extends EventEmitter {
       creator_uuid: c.creator_uuid,
       created_at: c.created_at,
       updated_at: c.updated_at,
-      members: (c.members || []).map((m) => m.uuid || m.peer_uuid),
+      members: c.members || [],
     }));
 
     const vaultManifest = this.db.getAllVaultNodes();
@@ -905,17 +1098,10 @@ class MeshNetwork extends EventEmitter {
       }
     }
 
-    const allPeers = this.db.getPeers({ includeSelf: false }).map((p) => ({
-      uuid: p.uuid,
-      display_name: p.display_name,
-      avatar_data: p.avatar_data,
-      recovery_key_hash: p.recovery_key_hash,
-      recovery_key_salt: p.recovery_key_salt,
-      security_question: p.security_question,
-      security_answer_hash: p.security_answer_hash,
-      security_answer_salt: p.security_answer_salt,
-      updated_at: p.updated_at,
-    }));
+    const allPeers = this.db
+      .getPeers({ includeSelf: false })
+      .map((p) => this._serializePeerForSync(p));
+    const hostedPeers = Array.from(this.hostedMobilePeers.keys());
 
     this._sendRaw(ws, {
       type: 'SYNC_HELLO',
@@ -925,6 +1111,7 @@ class MeshNetwork extends EventEmitter {
       trashManifest,
       filePresence: myPresence,
       peers: allPeers,
+      hostedPeers,
     });
   }
 
@@ -949,6 +1136,12 @@ class MeshNetwork extends EventEmitter {
       case 'PROFILE_UPDATE':
         this._handleProfileUpdate(senderUuid, msg);
         break;
+      case 'PEER_SYNC':
+        this._handlePeerSync(senderUuid, msg);
+        break;
+      case 'PEER_ANNOUNCE':
+        this._handlePeerAnnounce(senderUuid, msg);
+        break;
       case 'GROUP_UPSERT':
         this._handleGroupUpsert(msg);
         break;
@@ -961,14 +1154,21 @@ class MeshNetwork extends EventEmitter {
       case 'CHAT_DELETE':
         this._handleIncomingChatDelete(senderUuid, msg);
         break;
-      case 'CHAT_TYPING':
+      case 'CHAT_TYPING': {
+        const typingActor =
+          msg.peerUuid &&
+          msg.peerUuid !== senderUuid &&
+          this.remoteHostedPeers.get(msg.peerUuid)?.has(senderUuid)
+            ? msg.peerUuid
+            : senderUuid;
         this.emit('chat:typing', {
           conversationId: msg.conversationId,
-          peerUuid: senderUuid,
+          peerUuid: typingActor,
           displayName: msg.displayName,
           isTyping: Boolean(msg.isTyping),
         });
         break;
+      }
       case 'CHAT_RECEIPT':
         this._handleIncomingChatReceipt(senderUuid, msg);
         break;
@@ -1060,34 +1260,72 @@ class MeshNetwork extends EventEmitter {
     // Update peer identity & endpoint (IP change seamlessly preserves UUID)
     this.db.upsertPeer({
       ...remoteId,
+      device_type: remoteId.device_type || 'desktop',
       ip: ws._remoteIp || undefined,
       ws_port: remoteId.ws_port || ws._remoteWsPort || undefined,
       status: 'online',
       last_seen: Date.now(),
     });
 
-    // Propagate cached recovery hashes of other peers
+    // Reconcile hosted peers announced by remoteUuid
+    for (const [hostedUuid, gateways] of this.remoteHostedPeers.entries()) {
+      if (gateways.delete(remoteUuid) && gateways.size === 0) {
+        this.remoteHostedPeers.delete(hostedUuid);
+      }
+    }
+    if (Array.isArray(msg.hostedPeers)) {
+      for (const hUuid of msg.hostedPeers) {
+        if (!hUuid || hUuid === this.myUuid || hUuid === remoteUuid) continue;
+        let gws = this.remoteHostedPeers.get(hUuid);
+        if (!gws) {
+          gws = new Set();
+          this.remoteHostedPeers.set(hUuid, gws);
+        }
+        gws.add(remoteUuid);
+        const existingHosted = this.db.getPeer(hUuid);
+        if (existingHosted) {
+          this.db.upsertPeer({
+            uuid: hUuid,
+            status: 'online',
+            last_seen: Date.now(),
+            gateway_uuid: remoteUuid,
+          });
+        }
+      }
+    }
+
+    // Propagate all synced peers (desktop + standalone mobile accounts)
     if (Array.isArray(msg.peers)) {
       for (const p of msg.peers) {
         if (p && p.uuid && p.uuid !== this.myUuid && p.uuid !== remoteUuid) {
           const cur = this.db.getPeer(p.uuid);
-          if (!cur || (p.updated_at || 0) > (cur.updated_at || 0)) {
+          const isOnline = this._isPeerLiveOnline(p.uuid);
+          const activeGw = this.hostedMobilePeers.has(p.uuid)
+            ? this.myUuid
+            : (this.remoteHostedPeers.get(p.uuid)?.size > 0
+                ? Array.from(this.remoteHostedPeers.get(p.uuid))[0]
+                : null);
+
+          if (!cur || (p.updated_at || 0) >= (cur.updated_at || 0)) {
             this.db.upsertPeer({
               ...p,
-              status: this.peerSockets.has(p.uuid) ? 'online' : (cur?.status || 'offline'),
-              last_seen: cur?.last_seen || 0,
+              gateway_uuid: activeGw,
+              status: isOnline ? 'online' : (cur?.status && this.peerSockets.has(p.uuid) ? 'online' : 'offline'),
+              last_seen: isOnline ? Date.now() : (cur?.last_seen || 0),
             });
+          } else if (isOnline && cur.status !== 'online') {
+            this.db.setPeerStatus(p.uuid, 'online', Date.now());
           }
         }
       }
     }
 
-    // Merge conversations relevant to local user
+    // Replicate ALL conversations across desktop peers for roaming & mobile gateway routing
     let convChanged = false;
     if (Array.isArray(msg.conversations)) {
       for (const c of msg.conversations) {
-        if (c && Array.isArray(c.members) && c.members.includes(this.myUuid)) {
-          this.db.upsertConversation(c, c.members);
+        if (c && c.id) {
+          this.db.upsertConversation(c, c.members || []);
           convChanged = true;
         }
       }
@@ -1166,13 +1404,15 @@ class MeshNetwork extends EventEmitter {
       }
     }
 
-    // Request missed delta messages & audit logs since per-peer cursor
+    // Request missed delta messages, peers & audit logs since per-peer cursor
     const peerSyncLamport = Number(this.db.getSetting(`sync_cursor_msg:${remoteUuid}`, 0)) || 0;
     const peerAuditTs = Number(this.db.getSetting(`sync_cursor_audit:${remoteUuid}`, 0)) || 0;
+    const peerUpdatedTs = Number(this.db.getSetting(`sync_cursor_peer:${remoteUuid}`, 0)) || 0;
     this._sendRaw(ws, {
       type: 'SYNC_DELTA_REQ',
       sinceLamportTs: peerSyncLamport,
       sinceAuditTs: peerAuditTs,
+      sincePeerTs: peerUpdatedTs,
     });
 
     this.emit('peers:changed', this.db.getPeers());
@@ -1258,15 +1498,34 @@ class MeshNetwork extends EventEmitter {
   _handleSyncDeltaReq(ws, senderUuid, msg) {
     const sinceLamport = Number(msg.sinceLamportTs) || 0;
     const sinceAudit = Number(msg.sinceAuditTs) || 0;
+    const sincePeerTs = Number(msg.sincePeerTs) || 0;
 
-    // Only share messages in conversations the requesting peer belongs to
-    const senderConvs = new Set(this.db.getConversations(senderUuid).map((c) => c.id));
-    const msgs = this.db.getMessagesSince(sinceLamport).filter((m) => senderConvs.has(m.conversation_id));
+    // Distributed replica: send all messages with lamport_ts > sinceLamport + their conversations + updated peers
+    const msgs = this.db.getMessagesSince(sinceLamport);
+    const convMap = new Map();
+    for (const c of this.db.getAllConversationsWithMembers()) {
+      convMap.set(c.id, c);
+    }
+    const referencedConvs = [];
+    const seenConvIds = new Set();
+    for (const m of msgs) {
+      if (m.conversation_id && !seenConvIds.has(m.conversation_id)) {
+        seenConvIds.add(m.conversation_id);
+        const c = convMap.get(m.conversation_id);
+        if (c) referencedConvs.push(c);
+      }
+    }
+
+    const peers = this.db
+      .getPeersUpdatedSince(sincePeerTs)
+      .map((p) => this._serializePeerForSync(p));
     const audits = this.db.getAuditLogsSince(sinceAudit);
 
     this._sendRaw(ws, {
       type: 'SYNC_DELTA_RES',
       messages: msgs,
+      conversations: referencedConvs,
+      peers,
       auditLogs: audits,
     });
   }
@@ -1274,13 +1533,52 @@ class MeshNetwork extends EventEmitter {
   _handleSyncDeltaRes(senderUuid, msg) {
     let maxMsgLamport = Number(this.db.getSetting(`sync_cursor_msg:${senderUuid}`, 0)) || 0;
     let maxAuditTs = Number(this.db.getSetting(`sync_cursor_audit:${senderUuid}`, 0)) || 0;
+    let maxPeerTs = Number(this.db.getSetting(`sync_cursor_peer:${senderUuid}`, 0)) || 0;
     let anyNewMsg = false;
+    let peersUpdated = false;
+
+    if (Array.isArray(msg.peers)) {
+      for (const p of msg.peers) {
+        if (!p || !p.uuid || p.uuid === this.myUuid) continue;
+        const cur = this.db.getPeer(p.uuid);
+        const isOnline = this._isPeerLiveOnline(p.uuid);
+        const activeGw = this.hostedMobilePeers.has(p.uuid)
+          ? this.myUuid
+          : (this.remoteHostedPeers.get(p.uuid)?.size > 0
+              ? Array.from(this.remoteHostedPeers.get(p.uuid))[0]
+              : (cur?.gateway_uuid ?? null));
+
+        if (!cur || (p.updated_at || 0) >= (cur.updated_at || 0)) {
+          this.db.upsertPeer({
+            ...p,
+            gateway_uuid: activeGw,
+            status: isOnline ? 'online' : (cur?.status || 'offline'),
+            last_seen: isOnline ? Date.now() : (cur?.last_seen || 0),
+          });
+          peersUpdated = true;
+        }
+        if ((p.updated_at || 0) > maxPeerTs) {
+          maxPeerTs = p.updated_at;
+        }
+      }
+      this.db.setSetting(`sync_cursor_peer:${senderUuid}`, maxPeerTs);
+    }
+
+    if (Array.isArray(msg.conversations)) {
+      for (const c of msg.conversations) {
+        if (c && c.id) {
+          this.db.upsertConversation(c, c.members || []);
+          anyNewMsg = true;
+        }
+      }
+    }
 
     if (Array.isArray(msg.messages)) {
       for (const m of msg.messages) {
         if (!m || !m.id) continue;
         this.db.nextLamportTs(m.lamport_ts);
-        const existed = Boolean(this.db.getMessageById(m.id));
+        const prev = this.db.getMessageById(m.id);
+        const existed = Boolean(prev);
         const saved = this.db.saveMessage(m);
         if (Array.isArray(m.receipts)) {
           for (const rec of m.receipts) {
@@ -1301,15 +1599,27 @@ class MeshNetwork extends EventEmitter {
           }
         }
 
-        if (m.sender_uuid !== this.myUuid) {
-          this.db.upsertReceipt(m.id, this.myUuid, 'delivered');
-          this.sendToPeer(m.sender_uuid, {
-            type: 'CHAT_RECEIPT',
-            conversationId: m.conversation_id,
-            messageIds: [m.id],
-            peerUuid: this.myUuid,
-            status: 'delivered',
-          });
+        // Mark delivered ONLY for local desktop user (if member) or locally hosted member peers
+        const localActors = new Set();
+        if (this.myUuid && this.db.isConversationMember(m.conversation_id, this.myUuid)) {
+          localActors.add(this.myUuid);
+        }
+        for (const hostedUuid of this.hostedMobilePeers.keys()) {
+          if (this.db.isConversationMember(m.conversation_id, hostedUuid)) {
+            localActors.add(hostedUuid);
+          }
+        }
+        for (const actorUuid of localActors) {
+          if (m.sender_uuid !== actorUuid) {
+            this.db.upsertReceipt(m.id, actorUuid, 'delivered');
+            this.broadcast({
+              type: 'CHAT_RECEIPT',
+              conversationId: m.conversation_id,
+              messageIds: [m.id],
+              peerUuid: actorUuid,
+              status: 'delivered',
+            });
+          }
         }
 
         if (saved?.attachment?.blobId && saved?.attachment?.fileName) {
@@ -1326,6 +1636,13 @@ class MeshNetwork extends EventEmitter {
         if (!existed) {
           anyNewMsg = true;
           this.emit('chat:message', this.db.getMessageById(m.id));
+        } else if (saved && prev && (saved.lamport_ts || 0) > (prev.lamport_ts || 0)) {
+          anyNewMsg = true;
+          if (saved.deleted_at && !prev.deleted_at) {
+            this.emit('chat:delete', saved);
+          } else if (saved.edited_at !== prev.edited_at || saved.body !== prev.body) {
+            this.emit('chat:edit', saved);
+          }
         }
       }
       this.db.setSetting(`sync_cursor_msg:${senderUuid}`, maxMsgLamport);
@@ -1340,6 +1657,9 @@ class MeshNetwork extends EventEmitter {
       this.db.setSetting(`sync_cursor_audit:${senderUuid}`, maxAuditTs);
     }
 
+    if (peersUpdated) {
+      this.emit('peers:changed', this.db.getPeers());
+    }
     if (anyNewMsg) {
       this.emit('conversations:changed');
     }
@@ -1349,9 +1669,91 @@ class MeshNetwork extends EventEmitter {
     if (!msg.identity || msg.identity.uuid !== senderUuid) return;
     this.db.upsertPeer({
       ...msg.identity,
+      device_type: msg.identity.device_type || 'desktop',
       status: 'online',
       last_seen: Date.now(),
     });
+    this.emit('peers:changed', this.db.getPeers());
+    this.emit('conversations:changed');
+  }
+
+  _handlePeerSync(senderUuid, msg) {
+    const p = msg.peer;
+    if (!p || !p.uuid || p.uuid === this.myUuid) return;
+
+    if (msg.hosted && msg.gatewayUuid) {
+      let gws = this.remoteHostedPeers.get(p.uuid);
+      if (!gws) {
+        gws = new Set();
+        this.remoteHostedPeers.set(p.uuid, gws);
+      }
+      gws.add(msg.gatewayUuid);
+    }
+
+    const cur = this.db.getPeer(p.uuid);
+    const isOnline = this._isPeerLiveOnline(p.uuid);
+    const activeGw = this.hostedMobilePeers.has(p.uuid)
+      ? this.myUuid
+      : (this.remoteHostedPeers.get(p.uuid)?.size > 0
+          ? Array.from(this.remoteHostedPeers.get(p.uuid))[0]
+          : (p.gateway_uuid ?? null));
+
+    if (!cur || (p.updated_at || 0) >= (cur.updated_at || 0)) {
+      this.db.upsertPeer({
+        ...p,
+        gateway_uuid: activeGw,
+        status: isOnline ? 'online' : (cur?.status || 'offline'),
+        last_seen: isOnline ? Date.now() : (cur?.last_seen || 0),
+      });
+      this.emit('peers:changed', this.db.getPeers());
+      this.emit('conversations:changed');
+    }
+  }
+
+  _handlePeerAnnounce(senderUuid, msg) {
+    const peerUuid = msg.peer?.uuid || msg.peerUuid;
+    if (!peerUuid || peerUuid === this.myUuid) return;
+    const gatewayUuid = msg.gatewayUuid || senderUuid;
+
+    if (msg.action === 'online') {
+      let gws = this.remoteHostedPeers.get(peerUuid);
+      if (!gws) {
+        gws = new Set();
+        this.remoteHostedPeers.set(peerUuid, gws);
+      }
+      gws.add(gatewayUuid);
+
+      const base = msg.peer || { uuid: peerUuid };
+      this.db.upsertPeer({
+        ...base,
+        uuid: peerUuid,
+        gateway_uuid: gatewayUuid,
+        status: 'online',
+        last_seen: Date.now(),
+      });
+    } else {
+      const gws = this.remoteHostedPeers.get(peerUuid);
+      if (gws) {
+        gws.delete(gatewayUuid);
+        if (gws.size === 0) {
+          this.remoteHostedPeers.delete(peerUuid);
+        }
+      }
+      const stillOnline = this._isPeerLiveOnline(peerUuid);
+      const nextGw = this.remoteHostedPeers.get(peerUuid)
+        ? (Array.from(this.remoteHostedPeers.get(peerUuid))[0] || null)
+        : null;
+      const cur = this.db.getPeer(peerUuid);
+      const base = msg.peer || { uuid: peerUuid };
+      this.db.upsertPeer({
+        ...base,
+        uuid: peerUuid,
+        gateway_uuid: cur?.gateway_uuid === gatewayUuid ? nextGw : (cur?.gateway_uuid ?? nextGw),
+        status: stillOnline ? 'online' : 'offline',
+        last_seen: Date.now(),
+      });
+    }
+
     this.emit('peers:changed', this.db.getPeers());
     this.emit('conversations:changed');
   }
@@ -1360,9 +1762,8 @@ class MeshNetwork extends EventEmitter {
     const conv = msg.conversation;
     if (!conv || !conv.id) return;
     const memberUuids = (conv.members || []).map((m) => (typeof m === 'string' ? m : m.uuid || m.peer_uuid));
-    if (!memberUuids.includes(this.myUuid)) return;
     this.db.upsertConversation(conv, memberUuids);
-    this.emit('conversations:changed');
+    this.emit('conversations:changed', { conversationId: conv.id, memberUuids });
   }
 
   _handleIncomingChatMessage(senderUuid, msg) {
@@ -1370,9 +1771,7 @@ class MeshNetwork extends EventEmitter {
       const members = (msg.conversation.members || []).map((m) =>
         typeof m === 'string' ? m : m.uuid || m.peer_uuid
       );
-      if (members.length === 0 || members.includes(this.myUuid)) {
-        this.db.upsertConversation(msg.conversation, members);
-      }
+      this.db.upsertConversation(msg.conversation, members);
     }
     const m = msg.message;
     if (!m || !m.id) return;
@@ -1380,15 +1779,27 @@ class MeshNetwork extends EventEmitter {
     this.db.nextLamportTs(m.lamport_ts);
     const saved = this.db.saveMessage(m);
 
-    if (m.sender_uuid && m.sender_uuid !== this.myUuid) {
-      this.db.upsertReceipt(m.id, this.myUuid, 'delivered');
-      this.sendToPeer(senderUuid, {
-        type: 'CHAT_RECEIPT',
-        conversationId: m.conversation_id,
-        messageIds: [m.id],
-        peerUuid: this.myUuid,
-        status: 'delivered',
-      });
+    const localActors = new Set();
+    if (this.myUuid && this.db.isConversationMember(m.conversation_id, this.myUuid)) {
+      localActors.add(this.myUuid);
+    }
+    for (const hostedUuid of this.hostedMobilePeers.keys()) {
+      if (this.db.isConversationMember(m.conversation_id, hostedUuid)) {
+        localActors.add(hostedUuid);
+      }
+    }
+
+    for (const actorUuid of localActors) {
+      if (m.sender_uuid && m.sender_uuid !== actorUuid) {
+        this.db.upsertReceipt(m.id, actorUuid, 'delivered');
+        this.broadcast({
+          type: 'CHAT_RECEIPT',
+          conversationId: m.conversation_id,
+          messageIds: [m.id],
+          peerUuid: actorUuid,
+          status: 'delivered',
+        });
+      }
     }
 
     if (saved?.attachment?.blobId && saved?.attachment?.fileName) {
@@ -1409,25 +1820,48 @@ class MeshNetwork extends EventEmitter {
     }
 
     this.emit('chat:message', saved);
-    this.emit('conversations:changed');
+    this.emit('conversations:changed', { conversationId: m.conversation_id });
+  }
+
+  _isAuthorizedChatActor(senderUuid, msg, expectedSenderUuid, actionType, targetId, lamportTs) {
+    if (senderUuid === expectedSenderUuid) return true;
+    if (!msg || !msg.actorUuid || msg.actorUuid !== expectedSenderUuid) return false;
+    if (msg.actorProof && this._verifyActorProof(msg.actorUuid, actionType, targetId, lamportTs, msg.actorProof)) {
+      return true;
+    }
+    const gateways = this.remoteHostedPeers.get(msg.actorUuid);
+    if (gateways && gateways.has(senderUuid)) {
+      return true;
+    }
+    const peer = this.db.getPeer(msg.actorUuid);
+    if (peer && peer.device_type === 'mobile' && peer.gateway_uuid === senderUuid) {
+      return true;
+    }
+    return false;
   }
 
   _handleIncomingChatEdit(senderUuid, msg) {
     const existing = this.db.getMessageById(msg.id);
-    if (!existing || existing.sender_uuid !== senderUuid) return;
+    if (!existing) return;
+    if (!this._isAuthorizedChatActor(senderUuid, msg, existing.sender_uuid, 'CHAT_EDIT', msg.id, msg.lamportTs)) {
+      return;
+    }
     this.db.nextLamportTs(msg.lamportTs);
     const updated = this.db.updateMessageText(msg.id, msg.body, msg.editedAt, msg.lamportTs);
     this.emit('chat:edit', updated);
-    this.emit('conversations:changed');
+    this.emit('conversations:changed', { conversationId: updated.conversation_id });
   }
 
   _handleIncomingChatDelete(senderUuid, msg) {
     const existing = this.db.getMessageById(msg.id);
-    if (!existing || existing.sender_uuid !== senderUuid) return;
+    if (!existing) return;
+    if (!this._isAuthorizedChatActor(senderUuid, msg, existing.sender_uuid, 'CHAT_DELETE', msg.id, msg.lamportTs)) {
+      return;
+    }
     this.db.nextLamportTs(msg.lamportTs);
     const updated = this.db.softDeleteMessage(msg.id, msg.deletedAt, msg.lamportTs);
     this.emit('chat:delete', updated);
-    this.emit('conversations:changed');
+    this.emit('conversations:changed', { conversationId: updated.conversation_id });
   }
 
   _handleIncomingChatReceipt(senderUuid, msg) {
@@ -1487,15 +1921,17 @@ class MeshNetwork extends EventEmitter {
       return;
     }
 
+    const effectiveActor = this._resolveEffectiveActor(senderUuid, msg, relPath, node.lamport_ts);
+
     const parentPath = getParentRelPath(relPath);
     if (parentPath) {
-      const parentAcl = computeEffectiveAcl(this.db, parentPath, senderUuid, null);
+      const parentAcl = computeEffectiveAcl(this.db, parentPath, effectiveActor, null);
       if (!parentAcl.canWrite) return;
     }
 
     const existing = this.db.getVaultNode(relPath);
     if (existing) {
-      const acl = computeEffectiveAcl(this.db, relPath, senderUuid, null);
+      const acl = computeEffectiveAcl(this.db, relPath, effectiveActor, null);
       if (!acl.canWrite) return;
     }
 
@@ -1517,15 +1953,17 @@ class MeshNetwork extends EventEmitter {
       return;
     }
 
+    const effectiveActor = this._resolveEffectiveActor(senderUuid, msg, relPath, node.lamport_ts);
+
     const existing = this.db.getVaultNode(relPath);
     if (existing) {
-      const acl = computeEffectiveAcl(this.db, relPath, senderUuid, null);
+      const acl = computeEffectiveAcl(this.db, relPath, effectiveActor, null);
       if (!acl.canWrite) {
         // Reject tampered or unauthorized remote file write
         this.db.addAuditLog({
           eventType: 'remote_write_rejected',
-          actorUuid: senderUuid,
-          actorName: this.db.getPeer(senderUuid)?.display_name || senderUuid,
+          actorUuid: effectiveActor,
+          actorName: this.db.getPeer(effectiveActor)?.display_name || effectiveActor,
           targetPath: relPath,
           details: 'Rejected unauthorized VAULT_FILE_UPDATE',
         });
@@ -1533,7 +1971,7 @@ class MeshNetwork extends EventEmitter {
       }
       // Preserve owner's ACL if sender is a non-owner editor
       const mergedNode =
-        senderUuid === existing.owner_uuid
+        effectiveActor === existing.owner_uuid
           ? node
           : {
               ...node,
@@ -1552,12 +1990,12 @@ class MeshNetwork extends EventEmitter {
     } else {
       const parentPath = getParentRelPath(relPath);
       if (parentPath) {
-        const parentAcl = computeEffectiveAcl(this.db, parentPath, senderUuid, null);
+        const parentAcl = computeEffectiveAcl(this.db, parentPath, effectiveActor, null);
         if (!parentAcl.canWrite) {
           this.db.addAuditLog({
             eventType: 'remote_write_rejected',
-            actorUuid: senderUuid,
-            actorName: this.db.getPeer(senderUuid)?.display_name || senderUuid,
+            actorUuid: effectiveActor,
+            actorName: this.db.getPeer(effectiveActor)?.display_name || effectiveActor,
             targetPath: relPath,
             details: 'Rejected unauthorized VAULT_FILE_UPDATE inside protected ancestor',
           });
@@ -2307,9 +2745,8 @@ class MeshNetwork extends EventEmitter {
     let secretKeyUsed = null;
 
     if (method === 'security_qa') {
-      const normalizedAnswer = String(answerOrKey || '').trim().toLowerCase();
-      verified = verifySecret(
-        normalizedAnswer,
+      verified = verifySecurityAnswerFlexible(
+        answerOrKey,
         owner.security_answer_hash,
         owner.security_answer_salt
       );
@@ -2564,7 +3001,17 @@ class MeshNetwork extends EventEmitter {
       targetPath: relPath,
     });
 
-    this.broadcast({ type: 'VAULT_DIR_CREATE', node: saved });
+    const dirMsg = { type: 'VAULT_DIR_CREATE', node: saved };
+    if (actorUuid && actorUuid !== this.myUuid) {
+      dirMsg.actorUuid = actorUuid;
+      dirMsg.actorProof = this._signActorProof(
+        actorUuid,
+        'VAULT_DIR_CREATE',
+        saved.rel_path,
+        saved.lamport_ts
+      );
+    }
+    this.broadcast(dirMsg);
     this.emit('vault:changed', { relPath });
     return saved;
   }
@@ -2808,10 +3255,19 @@ class MeshNetwork extends EventEmitter {
   broadcastVaultFileSaved(relPath, info = {}) {
     const norm = normalizeRelPath(relPath);
     if (info && info.node) {
-      this.broadcast({
-        type: info.node.is_dir ? 'VAULT_DIR_CREATE' : 'VAULT_FILE_UPDATE',
-        node: info.node,
-      });
+      const msgType = info.node.is_dir ? 'VAULT_DIR_CREATE' : 'VAULT_FILE_UPDATE';
+      const actorUuid = info.actorUuid || info.node.owner_uuid || this.myUuid;
+      const payload = { type: msgType, node: info.node };
+      if (actorUuid && actorUuid !== this.myUuid) {
+        payload.actorUuid = actorUuid;
+        payload.actorProof = this._signActorProof(
+          actorUuid,
+          msgType,
+          info.node.rel_path,
+          info.node.lamport_ts
+        );
+      }
+      this.broadcast(payload);
       this.emit('vault:changed', { relPath: norm });
       return info.node;
     }
@@ -2819,6 +3275,8 @@ class MeshNetwork extends EventEmitter {
     const diskPath = safeResolvePath(this.vaultPaths.filesDir, norm);
     const existing = this.db.getVaultNode(norm);
     const id = this.db.getIdentity() || this.identity;
+    const actorUuid = info.actorUuid || existing?.owner_uuid || id?.uuid || this.myUuid;
+    const actorRec = actorUuid === this.myUuid ? id : this.db.getPeer(actorUuid);
 
     let size = info.size;
     let sha256 = info.sha256;
@@ -2834,18 +3292,26 @@ class MeshNetwork extends EventEmitter {
       size: size ?? existing?.size ?? 0,
       mime: info.mime ?? existing?.mime ?? null,
       sha256: sha256 ?? existing?.sha256 ?? null,
-      owner_uuid: existing?.owner_uuid || info.actorUuid || id?.uuid || this.myUuid,
-      owner_name: existing?.owner_name || info.actorName || id?.display_name || '',
+      owner_uuid: existing?.owner_uuid || actorUuid,
+      owner_name: existing?.owner_name || info.actorName || actorRec?.display_name || '',
       perm_mode: existing?.perm_mode || 'public',
       version: (existing?.version || 0) + 1,
       lamport_ts: this.db.nextLamportTs(),
       updated_at: Date.now(),
     });
 
-    this.broadcast({
-      type: saved.is_dir ? 'VAULT_DIR_CREATE' : 'VAULT_FILE_UPDATE',
-      node: saved,
-    });
+    const msgType = saved.is_dir ? 'VAULT_DIR_CREATE' : 'VAULT_FILE_UPDATE';
+    const payload = { type: msgType, node: saved };
+    if (actorUuid && actorUuid !== this.myUuid) {
+      payload.actorUuid = actorUuid;
+      payload.actorProof = this._signActorProof(
+        actorUuid,
+        msgType,
+        saved.rel_path,
+        saved.lamport_ts
+      );
+    }
+    this.broadcast(payload);
     this.emit('vault:changed', { relPath: norm });
     return saved;
   }
@@ -3081,20 +3547,29 @@ class MeshNetwork extends EventEmitter {
 
   sendChatMessage(payload) {
     const id = this.db.getIdentity() || this.db.ensureIdentity();
+    const actorUuid = payload.actorUuid || id.uuid;
+    const actor = actorUuid === id.uuid ? id : this.db.getPeer(actorUuid);
+    if (!actor) {
+      throw makeCodedError('NOT_FOUND', `Actor not found: ${actorUuid}`);
+    }
+
     const convId = payload.conversationId ?? payload.conversation_id;
-    let conv = this.db.getConversation(convId);
+    let conv = convId ? this.db.getConversation(convId) : null;
     if (!conv && payload.peerUuid) {
-      conv = this.db.ensureDmConversation(id.uuid, payload.peerUuid);
+      conv = this.db.ensureDmConversation(actorUuid, payload.peerUuid);
     }
     if (!conv) {
       throw makeCodedError('NOT_FOUND', `Conversation not found: ${convId}`);
     }
+    if (!this.db.isConversationMember(conv.id, actorUuid)) {
+      throw makeCodedError('FORBIDDEN', 'Actor is not a member of this conversation');
+    }
 
-    const saved = this.db.saveMessage({
+    let saved = this.db.saveMessage({
       id: payload.id || generateUuid(),
       conversation_id: conv.id,
-      sender_uuid: id.uuid,
-      sender_name: id.display_name || 'Me',
+      sender_uuid: actor.uuid,
+      sender_name: actor.display_name || actor.name || 'Me',
       type: payload.type || 'text',
       body: payload.body ?? '',
       reply_to_id: payload.replyToId ?? payload.reply_to_id ?? null,
@@ -3118,148 +3593,182 @@ class MeshNetwork extends EventEmitter {
     });
 
     const memberUuids = (conv.members || []).map((m) => m.uuid || m.peer_uuid);
-    this.broadcast(
-      {
-        type: 'CHAT_MESSAGE',
-        conversation: {
-          id: conv.id,
-          type: conv.type,
-          name: conv.name,
-          avatar_data: conv.avatar_data,
-          creator_uuid: conv.creator_uuid,
-          created_at: conv.created_at,
-          updated_at: conv.updated_at,
-          members: memberUuids,
-        },
-        message: saved,
+    // Broadcast to ALL connected desktop peers so every PC holds a distributed replica
+    this.broadcast({
+      type: 'CHAT_MESSAGE',
+      conversation: {
+        id: conv.id,
+        type: conv.type,
+        name: conv.name,
+        avatar_data: conv.avatar_data,
+        creator_uuid: conv.creator_uuid,
+        created_at: conv.created_at,
+        updated_at: conv.updated_at,
+        members: memberUuids,
       },
-      memberUuids
-    );
+      message: saved,
+    });
+
+    // Handle local delivery receipts if another member is active on this same PC
+    const localOtherMembers = new Set();
+    if (this.myUuid && this.myUuid !== actorUuid && memberUuids.includes(this.myUuid)) {
+      localOtherMembers.add(this.myUuid);
+    }
+    for (const hostedUuid of this.hostedMobilePeers.keys()) {
+      if (hostedUuid !== actorUuid && memberUuids.includes(hostedUuid)) {
+        localOtherMembers.add(hostedUuid);
+      }
+    }
+    for (const recUuid of localOtherMembers) {
+      this.db.upsertReceipt(saved.id, recUuid, 'delivered');
+      this.broadcast({
+        type: 'CHAT_RECEIPT',
+        conversationId: conv.id,
+        messageIds: [saved.id],
+        peerUuid: recUuid,
+        status: 'delivered',
+      });
+    }
+    if (localOtherMembers.size > 0) {
+      saved = this.db.getMessageById(saved.id);
+    }
 
     this.emit('chat:message', saved);
-    this.emit('conversations:changed');
+    this.emit('conversations:changed', { conversationId: conv.id, memberUuids });
     return saved;
   }
 
-  editChatMessage(id, newBody) {
+  editChatMessage(id, newBody, actorUuid = this.myUuid) {
     const existing = this.db.getMessageById(id);
     if (!existing) throw makeCodedError('NOT_FOUND', `Message not found: ${id}`);
+    const actor = actorUuid || this.myUuid;
+    if (existing.sender_uuid !== actor) {
+      throw makeCodedError('FORBIDDEN', 'Only the message sender can edit this message');
+    }
+    if (existing.deleted_at) {
+      throw makeCodedError('INVALID_OPERATION', 'Cannot edit a deleted message');
+    }
+
     const lamportTs = this.db.nextLamportTs();
     const editedAt = Date.now();
     const updated = this.db.updateMessageText(id, newBody, editedAt, lamportTs);
 
-    const conv = this.db.getConversation(updated.conversation_id);
-    const memberUuids = (conv?.members || []).map((m) => m.uuid || m.peer_uuid);
-    this.broadcast(
-      {
-        type: 'CHAT_EDIT',
-        id,
-        conversationId: updated.conversation_id,
-        body: newBody,
-        editedAt,
-        lamportTs,
-      },
-      memberUuids
-    );
+    const payload = {
+      type: 'CHAT_EDIT',
+      id,
+      conversationId: updated.conversation_id,
+      body: newBody,
+      editedAt,
+      lamportTs,
+      actorUuid: actor,
+    };
+    if (actor !== this.myUuid) {
+      payload.actorProof = this._signActorProof(actor, 'CHAT_EDIT', id, lamportTs);
+    }
+    this.broadcast(payload);
 
     this.emit('chat:edit', updated);
-    this.emit('conversations:changed');
+    this.emit('conversations:changed', { conversationId: updated.conversation_id });
     return updated;
   }
 
-  deleteChatMessage(id) {
+  deleteChatMessage(id, actorUuid = this.myUuid) {
     const existing = this.db.getMessageById(id);
     if (!existing) throw makeCodedError('NOT_FOUND', `Message not found: ${id}`);
+    const actor = actorUuid || this.myUuid;
+    if (existing.sender_uuid !== actor) {
+      throw makeCodedError('FORBIDDEN', 'Only the message sender can delete this message');
+    }
+
     const lamportTs = this.db.nextLamportTs();
     const deletedAt = Date.now();
     const updated = this.db.softDeleteMessage(id, deletedAt, lamportTs);
 
-    const conv = this.db.getConversation(updated.conversation_id);
-    const memberUuids = (conv?.members || []).map((m) => m.uuid || m.peer_uuid);
-    this.broadcast(
-      {
-        type: 'CHAT_DELETE',
-        id,
-        conversationId: updated.conversation_id,
-        deletedAt,
-        lamportTs,
-      },
-      memberUuids
-    );
+    const payload = {
+      type: 'CHAT_DELETE',
+      id,
+      conversationId: updated.conversation_id,
+      deletedAt,
+      lamportTs,
+      actorUuid: actor,
+    };
+    if (actor !== this.myUuid) {
+      payload.actorProof = this._signActorProof(actor, 'CHAT_DELETE', id, lamportTs);
+    }
+    this.broadcast(payload);
 
     this.emit('chat:delete', updated);
-    this.emit('conversations:changed');
+    this.emit('conversations:changed', { conversationId: updated.conversation_id });
     return updated;
   }
 
-  sendTyping(conversationId, isTyping) {
-    const id = this.db.getIdentity() || this.identity;
+  sendTyping(conversationId, isTyping, actorUuid = this.myUuid) {
+    const actor = actorUuid || this.myUuid;
     const conv = this.db.getConversation(conversationId);
-    if (!conv) return;
-    const memberUuids = (conv.members || []).map((m) => m.uuid || m.peer_uuid);
-    for (const uuid of memberUuids) {
-      if (uuid !== this.myUuid && this.peerSockets.has(uuid)) {
-        this.sendToPeer(uuid, {
-          type: 'CHAT_TYPING',
-          conversationId,
-          peerUuid: this.myUuid,
-          displayName: id?.display_name || 'Peer',
-          isTyping: Boolean(isTyping),
-        });
-      }
-    }
+    if (!conv || !this.db.isConversationMember(conversationId, actor)) return;
+    const actorRec = actor === this.myUuid ? (this.db.getIdentity() || this.identity) : this.db.getPeer(actor);
+    const displayName = actorRec?.display_name || actorRec?.name || 'Peer';
+    this.broadcast({
+      type: 'CHAT_TYPING',
+      conversationId,
+      peerUuid: actor,
+      displayName,
+      isTyping: Boolean(isTyping),
+    });
+    this.emit('chat:typing', {
+      conversationId,
+      peerUuid: actor,
+      displayName,
+      isTyping: Boolean(isTyping),
+    });
   }
 
-  markConversationRead(conversationId) {
-    const newlyReadIds = this.db.markConversationRead(conversationId, this.myUuid);
+  markConversationRead(conversationId, actorUuid = this.myUuid) {
+    const actor = actorUuid || this.myUuid;
+    if (!this.db.isConversationMember(conversationId, actor)) return [];
+    const newlyReadIds = this.db.markConversationRead(conversationId, actor);
     if (newlyReadIds.length > 0) {
-      const conv = this.db.getConversation(conversationId);
-      const memberUuids = (conv?.members || []).map((m) => m.uuid || m.peer_uuid);
-      this.broadcast(
-        {
-          type: 'CHAT_RECEIPT',
-          conversationId,
-          messageIds: newlyReadIds,
-          peerUuid: this.myUuid,
-          status: 'read',
-        },
-        memberUuids
-      );
+      this.broadcast({
+        type: 'CHAT_RECEIPT',
+        conversationId,
+        messageIds: newlyReadIds,
+        peerUuid: actor,
+        status: 'read',
+      });
       this.emit('chat:receipt', {
         conversationId,
         messageIds: newlyReadIds,
-        peerUuid: this.myUuid,
+        peerUuid: actor,
         status: 'read',
       });
-      this.emit('conversations:changed');
+      this.emit('conversations:changed', { conversationId });
     }
     return newlyReadIds;
   }
 
-  toggleReaction(messageId, emoji) {
+  toggleReaction(messageId, emoji, actorUuid = this.myUuid) {
+    const actor = actorUuid || this.myUuid;
     const msg = this.db.getMessageById(messageId);
     if (!msg) throw makeCodedError('NOT_FOUND', `Message not found: ${messageId}`);
-    const { added, reactions } = this.db.toggleReaction(messageId, this.myUuid, emoji);
-    const conv = this.db.getConversation(msg.conversation_id);
-    const memberUuids = (conv?.members || []).map((m) => m.uuid || m.peer_uuid);
+    if (!this.db.isConversationMember(msg.conversation_id, actor)) {
+      throw makeCodedError('FORBIDDEN', 'Actor is not a member of this conversation');
+    }
+    const { added, reactions } = this.db.toggleReaction(messageId, actor, emoji);
 
-    this.broadcast(
-      {
-        type: 'CHAT_REACTION',
-        messageId,
-        conversationId: msg.conversation_id,
-        peerUuid: this.myUuid,
-        emoji,
-        added,
-        createdAt: Date.now(),
-      },
-      memberUuids
-    );
+    this.broadcast({
+      type: 'CHAT_REACTION',
+      messageId,
+      conversationId: msg.conversation_id,
+      peerUuid: actor,
+      emoji,
+      added,
+      createdAt: Date.now(),
+    });
 
     this.emit('chat:reaction', {
       messageId,
       conversationId: msg.conversation_id,
-      peerUuid: this.myUuid,
+      peerUuid: actor,
       emoji,
       added,
       reactions,
@@ -3267,37 +3776,39 @@ class MeshNetwork extends EventEmitter {
     return { added, reactions };
   }
 
-  createGroup({ name, memberUuids = [], avatarData = null }) {
+  createGroup({ name, memberUuids = [], avatarData = null, creatorUuid = this.myUuid }) {
+    const creator = creatorUuid || this.myUuid;
     const conv = this.db.createGroup({
       name,
-      creatorUuid: this.myUuid,
+      creatorUuid: creator,
       memberUuids,
       avatarData,
     });
     const allMembers = (conv.members || []).map((m) => m.uuid || m.peer_uuid);
-    this.broadcast(
-      {
-        type: 'GROUP_UPSERT',
-        conversation: {
-          id: conv.id,
-          type: conv.type,
-          name: conv.name,
-          avatar_data: conv.avatar_data,
-          creator_uuid: conv.creator_uuid,
-          created_at: conv.created_at,
-          updated_at: conv.updated_at,
-          members: allMembers,
-        },
+    this.broadcast({
+      type: 'GROUP_UPSERT',
+      conversation: {
+        id: conv.id,
+        type: conv.type,
+        name: conv.name,
+        avatar_data: conv.avatar_data,
+        creator_uuid: conv.creator_uuid,
+        created_at: conv.created_at,
+        updated_at: conv.updated_at,
+        members: allMembers,
       },
-      allMembers
-    );
-    this.emit('conversations:changed');
+    });
+    this.emit('conversations:changed', { conversationId: conv.id, memberUuids: allMembers });
     return conv;
   }
 
   broadcastProfileUpdate() {
     const pubId = this._getPublicIdentity();
     this.broadcast({ type: 'PROFILE_UPDATE', identity: pubId });
+    const selfPeer = this.db.getPeer(pubId.uuid);
+    if (selfPeer) {
+      this.broadcastPeerSync(selfPeer);
+    }
     this.emit('peers:changed', this.db.getPeers());
     this.emit('conversations:changed');
     return pubId;

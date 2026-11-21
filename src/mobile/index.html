@@ -4,123 +4,400 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#4f46e5" />
-  <title>WorkMesh Mobile</title>
+  <title>TwinSync Pro</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <div id="app" class="app-shell">
-    <!-- Top Header -->
-    <header class="top-bar">
-      <div class="brand-wrap">
-        <div class="brand-logo" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="6" cy="6" r="2.5"></circle>
-            <circle cx="18" cy="6" r="2.5"></circle>
-            <circle cx="12" cy="18" r="2.5"></circle>
-            <path d="M8.2 7.2L15.8 7.2M7.3 8.1L10.7 15.8M16.7 8.1L13.3 15.8"></path>
-          </svg>
-        </div>
-        <div class="brand-text">
-          <div class="brand-title">WorkMesh</div>
-          <div id="conn-status" class="brand-subtitle">...</div>
+    <!-- Unified Portal Auth Screen (?mode=portal, no token, or logged out) -->
+    <section id="portal-auth-view" class="portal-auth-view hidden">
+      <div class="portal-auth-topbar">
+        <span id="portal-zero-badge" class="zero-badge"></span>
+        <div class="top-actions">
+          <button id="portal-btn-lang" class="icon-btn" type="button" title="Language">EN</button>
+          <button id="portal-btn-theme" class="icon-btn" type="button" title="Theme">🌙</button>
         </div>
       </div>
-      <div class="top-actions">
-        <button id="btn-lang" class="icon-btn" type="button" title="Language">AR/EN</button>
-        <button id="btn-theme" class="icon-btn" type="button" title="Theme">☀</button>
-      </div>
-    </header>
 
-    <!-- Main Content Area -->
-    <main class="main-area">
-      <!-- Unauthorized / Expired View -->
-      <section id="auth-error-view" class="center-card hidden">
-        <div class="lock-hero">🔒</div>
-        <h2 id="auth-err-title">Session Expired</h2>
-        <p id="auth-err-desc" class="muted"></p>
-        <div class="token-paste-row">
-          <input id="manual-token-input" type="text" class="input" placeholder="Token..." />
-          <button id="btn-apply-token" class="btn btn-primary" type="button">Connect</button>
+      <div class="portal-auth-card">
+        <div class="portal-brand-hero">
+          <div class="portal-logo" aria-hidden="true">
+            <svg viewBox="0 0 256 256" width="56" height="56">
+              <defs>
+                <linearGradient id="ts-bg-portal" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#4F46E5" />
+                  <stop offset="50%" stop-color="#0EA5E9" />
+                  <stop offset="100%" stop-color="#10B981" />
+                </linearGradient>
+                <linearGradient id="ts-shine-portal" x1="0%" y1="0%" x2="80%" y2="80%">
+                  <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24" />
+                  <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-bg-portal)" />
+              <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-shine-portal)" />
+              <rect x="15" y="15" width="226" height="226" rx="53" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="3" />
+              <line x1="98" y1="128" x2="158" y2="128" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="7" stroke-linecap="round" />
+              <path d="M 68 106 A 64 64 0 0 1 180 91" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" />
+              <path d="M 182 68 L 180 91 L 157 85" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M 188 150 A 64 64 0 0 1 76 165" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" />
+              <path d="M 74 188 L 76 165 L 99 171" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="98" cy="128" r="24" fill="#FFFFFF" fill-opacity="0.22" />
+              <circle cx="98" cy="128" r="16" fill="#FFFFFF" />
+              <circle cx="98" cy="128" r="8" fill="#4F46E5" />
+              <circle cx="158" cy="128" r="24" fill="#FFFFFF" fill-opacity="0.22" />
+              <circle cx="158" cy="128" r="16" fill="#FFFFFF" />
+              <circle cx="158" cy="128" r="8" fill="#10B981" />
+            </svg>
+          </div>
+          <h1 class="portal-title">TwinSync Pro</h1>
+          <p id="portal-subtitle" class="portal-subtitle"></p>
         </div>
-      </section>
 
-      <!-- Chats Tab -->
-      <section id="tab-chats" class="tab-view">
-        <!-- Conversation List -->
-        <div id="conv-list-pane" class="pane">
-          <div class="pane-toolbar">
-            <input id="conv-search" type="search" class="input" placeholder="Search chats..." />
-            <button id="btn-new-group" class="btn btn-primary btn-sm" type="button">+</button>
-          </div>
-          <div id="quick-peers-strip" class="peers-strip hidden"></div>
-          <div id="conv-list" class="list-stack"></div>
+        <div id="portal-expired-banner" class="alert-banner hidden"></div>
+
+        <!-- 2 Auth Tabs -->
+        <div class="auth-tabs" role="tablist">
+          <button id="auth-tab-login" class="auth-tab active" type="button" role="tab"></button>
+          <button id="auth-tab-register" class="auth-tab" type="button" role="tab"></button>
         </div>
 
-        <!-- Active Thread Pane -->
-        <div id="thread-pane" class="pane hidden">
-          <div class="thread-header">
-            <button id="btn-back-chats" class="icon-btn" type="button">←</button>
-            <div id="thread-avatar" class="avatar sm"></div>
-            <div class="thread-meta">
-              <div id="thread-title" class="thread-title"></div>
-              <div id="thread-subtitle" class="thread-subtitle"></div>
+        <!-- Tab 1: Login to Existing Account -->
+        <div id="portal-login-pane" class="auth-pane">
+          <div class="auth-search-row">
+            <input id="portal-account-search" type="search" class="input" autocomplete="off" />
+            <button id="btn-refresh-accounts" class="icon-btn" type="button" title="Refresh">↻</button>
+          </div>
+          <div id="portal-accounts-list" class="accounts-list"></div>
+
+          <!-- Selected Account PIN Login Panel -->
+          <div id="portal-login-panel" class="selected-account-panel hidden">
+            <div id="selected-account-summary" class="selected-account-summary"></div>
+            <div id="pc-no-pin-note" class="info-note hidden"></div>
+            <form id="portal-pin-form" class="auth-form hidden">
+              <label id="lbl-login-pin" class="field-label" for="login-pin-input"></label>
+              <div class="pin-input-wrap">
+                <input id="login-pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" class="input pin-input" autocomplete="off" />
+                <button id="btn-toggle-login-pin" class="icon-btn sm" type="button">👁</button>
+              </div>
+              <div id="login-error-msg" class="form-error hidden"></div>
+              <button id="btn-portal-login" class="btn btn-primary full-btn" type="submit"></button>
+              <button id="btn-open-forgot-pin" class="btn btn-ghost full-btn hidden" type="button"></button>
+            </form>
+          </div>
+
+          <!-- Offline PIN Recovery Panel (mobile accounts only) -->
+          <form id="portal-recovery-panel" class="selected-account-panel hidden">
+            <div class="recovery-header">
+              <button id="btn-back-to-pin" class="icon-btn sm" type="button">←</button>
+              <span id="recovery-panel-title" class="recovery-title"></span>
             </div>
-            <button id="btn-thread-search" class="icon-btn" type="button">🔍</button>
-          </div>
-          <div id="thread-search-bar" class="search-inline hidden">
-            <input id="msg-search-input" type="search" class="input" placeholder="Search messages..." />
-          </div>
-          <div id="messages-list" class="messages-scroll"></div>
-          <div id="reply-banner" class="reply-banner hidden">
-            <div class="reply-banner-body">
-              <div id="reply-banner-author" class="reply-author"></div>
-              <div id="reply-banner-snippet" class="reply-snippet"></div>
+            <div id="recovery-account-summary" class="selected-account-summary"></div>
+            <div class="recovery-method-tabs">
+              <button id="btn-rec-method-qa" class="auth-tab active" type="button"></button>
+              <button id="btn-rec-method-code" class="auth-tab" type="button"></button>
             </div>
-            <button id="btn-cancel-reply" class="icon-btn sm" type="button">✕</button>
-          </div>
-          <div id="recording-bar" class="recording-bar hidden">
-            <button id="btn-rec-cancel" class="btn btn-ghost btn-sm" type="button">✕</button>
-            <div class="rec-indicator">
-              <span class="rec-dot"></span>
-              <span id="rec-timer">00:00</span>
+            <div id="recovery-question-box" class="info-note"></div>
+            <div>
+              <label id="lbl-rec-answer" class="field-label" for="rec-answer-input"></label>
+              <input id="rec-answer-input" type="text" class="input" autocomplete="off" />
             </div>
-            <button id="btn-rec-send" class="btn btn-primary btn-sm" type="button">Send</button>
-          </div>
-          <form id="composer-form" class="composer-bar">
-            <input id="chat-file-input" type="file" class="hidden" />
-            <button id="btn-attach-file" class="icon-btn" type="button" title="Attach">📎</button>
-            <input id="composer-input" type="text" class="input composer-input" autocomplete="off" placeholder="Message..." />
-            <button id="btn-voice-rec" class="icon-btn" type="button" title="Voice Note">🎤</button>
-            <button id="btn-send-msg" class="btn btn-primary send-btn" type="submit">➤</button>
+            <div>
+              <label id="lbl-rec-new-pin" class="field-label" for="rec-new-pin-input"></label>
+              <input id="rec-new-pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" class="input pin-input" autocomplete="off" />
+            </div>
+            <div>
+              <label id="lbl-rec-confirm-pin" class="field-label" for="rec-confirm-pin-input"></label>
+              <input id="rec-confirm-pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" class="input pin-input" autocomplete="off" />
+            </div>
+            <div id="recovery-error-msg" class="form-error hidden"></div>
+            <button id="btn-submit-recovery" class="btn btn-primary full-btn" type="submit"></button>
           </form>
         </div>
-      </section>
 
-      <!-- Files (Vault) Tab -->
-      <section id="tab-files" class="tab-view hidden">
-        <div class="pane-toolbar">
-          <input id="vault-search-input" type="search" class="input" placeholder="Search Vault..." />
-          <input id="vault-upload-input" type="file" class="hidden" />
-          <button id="btn-vault-upload" class="btn btn-primary btn-sm" type="button">⬆</button>
+        <!-- Tab 2: Create New Standalone Account -->
+        <form id="portal-register-pane" class="auth-pane hidden">
+          <div>
+            <label id="lbl-reg-name" class="field-label" for="reg-name-input"></label>
+            <input id="reg-name-input" type="text" class="input" maxlength="48" autocomplete="off" />
+          </div>
+
+          <div>
+            <label id="lbl-reg-avatar" class="field-label"></label>
+            <div class="avatar-picker-row">
+              <div id="reg-avatar-preview" class="avatar lg"></div>
+              <div class="avatar-picker-controls">
+                <div id="reg-color-swatches" class="color-swatches"></div>
+                <div class="avatar-upload-actions">
+                  <input id="reg-photo-input" type="file" accept="image/*" class="hidden" />
+                  <button id="btn-reg-upload-photo" class="btn btn-ghost btn-sm" type="button"></button>
+                  <button id="btn-reg-clear-photo" class="btn btn-ghost btn-sm hidden" type="button"></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pin-pair-grid">
+            <div>
+              <label id="lbl-reg-pin" class="field-label" for="reg-pin-input"></label>
+              <input id="reg-pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" class="input pin-input" autocomplete="off" />
+            </div>
+            <div>
+              <label id="lbl-reg-confirm-pin" class="field-label" for="reg-confirm-pin-input"></label>
+              <input id="reg-confirm-pin-input" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" class="input pin-input" autocomplete="off" />
+            </div>
+          </div>
+
+          <div>
+            <label id="lbl-reg-sec-q" class="field-label" for="reg-sec-q-select"></label>
+            <select id="reg-sec-q-select" class="input"></select>
+            <input id="reg-sec-q-custom" type="text" class="input hidden" style="margin-top:8px" autocomplete="off" />
+          </div>
+
+          <div>
+            <label id="lbl-reg-sec-a" class="field-label" for="reg-sec-a-input"></label>
+            <div class="pin-input-wrap">
+              <input id="reg-sec-a-input" type="password" class="input" autocomplete="off" />
+              <button id="btn-toggle-reg-answer" class="icon-btn sm" type="button">👁</button>
+            </div>
+          </div>
+
+          <div id="register-error-msg" class="form-error hidden"></div>
+          <button id="btn-portal-register" class="btn btn-primary full-btn" type="submit"></button>
+        </form>
+
+        <!-- Compact Quick Link Token Fallback -->
+        <details id="quick-token-details" class="quick-token-details">
+          <summary id="quick-token-summary"></summary>
+          <div class="token-paste-row">
+            <input id="manual-token-input" type="text" class="input" placeholder="Token..." autocomplete="off" />
+            <button id="btn-apply-token" class="btn btn-primary btn-sm" type="button">Connect</button>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <!-- Authenticated Workspace Shell -->
+    <div id="authenticated-shell" class="authenticated-shell hidden">
+      <!-- Top Header -->
+      <header class="top-bar">
+        <div class="brand-wrap">
+          <div class="brand-logo" aria-hidden="true">
+            <svg viewBox="0 0 256 256" width="24" height="24">
+              <defs>
+                <linearGradient id="ts-bg-top" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#4F46E5" />
+                  <stop offset="50%" stop-color="#0EA5E9" />
+                  <stop offset="100%" stop-color="#10B981" />
+                </linearGradient>
+                <linearGradient id="ts-shine-top" x1="0%" y1="0%" x2="80%" y2="80%">
+                  <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24" />
+                  <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-bg-top)" />
+              <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-shine-top)" />
+              <rect x="15" y="15" width="226" height="226" rx="53" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="3" />
+              <line x1="98" y1="128" x2="158" y2="128" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="7" stroke-linecap="round" />
+              <path d="M 68 106 A 64 64 0 0 1 180 91" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" />
+              <path d="M 182 68 L 180 91 L 157 85" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M 188 150 A 64 64 0 0 1 76 165" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" />
+              <path d="M 74 188 L 76 165 L 99 171" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="98" cy="128" r="16" fill="#FFFFFF" />
+              <circle cx="98" cy="128" r="8" fill="#4F46E5" />
+              <circle cx="158" cy="128" r="16" fill="#FFFFFF" />
+              <circle cx="158" cy="128" r="8" fill="#10B981" />
+            </svg>
+          </div>
+          <div class="brand-text">
+            <div class="brand-title">TwinSync Pro</div>
+            <div id="conn-status" class="brand-subtitle">...</div>
+          </div>
         </div>
-        <div id="vault-breadcrumbs" class="breadcrumbs"></div>
-        <div id="vault-list" class="list-stack"></div>
-      </section>
-    </main>
+        <div class="top-actions">
+          <div id="top-account-badge" class="account-pill hidden"></div>
+          <button id="btn-switch-account-top" class="icon-btn btn-switch-account" type="button" title="Switch Account">
+            <span>⇄</span>
+            <span id="btn-switch-top-label" class="switch-label"></span>
+          </button>
+          <button id="btn-lang" class="icon-btn" type="button" title="Language">EN</button>
+          <button id="btn-theme" class="icon-btn" type="button" title="Theme">🌙</button>
+        </div>
+      </header>
 
-    <!-- Bottom Navigation -->
-    <nav class="bottom-nav">
-      <button id="nav-chats" class="nav-item active" type="button">
-        <span class="nav-icon">💬</span>
-        <span id="nav-chats-label" class="nav-label">Chats</span>
-        <span id="nav-unread-badge" class="badge hidden">0</span>
-      </button>
-      <button id="nav-files" class="nav-item" type="button">
-        <span class="nav-icon">📁</span>
-        <span id="nav-files-label" class="nav-label">Files</span>
-      </button>
-    </nav>
+      <!-- Workspace Body: Desktop Slim Rail (64px on >= 768px) + Main Content -->
+      <div class="workspace-body">
+        <aside class="desktop-rail" aria-label="Workspace Navigation">
+          <div class="rail-logo" title="TwinSync Pro" aria-hidden="true">
+            <svg viewBox="0 0 256 256" width="38" height="38">
+              <defs>
+                <linearGradient id="ts-bg-rail" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#4F46E5" />
+                  <stop offset="50%" stop-color="#0EA5E9" />
+                  <stop offset="100%" stop-color="#10B981" />
+                </linearGradient>
+                <linearGradient id="ts-shine-rail" x1="0%" y1="0%" x2="80%" y2="80%">
+                  <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24" />
+                  <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-bg-rail)" />
+              <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-shine-rail)" />
+              <rect x="15" y="15" width="226" height="226" rx="53" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="3" />
+              <line x1="98" y1="128" x2="158" y2="128" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="7" stroke-linecap="round" />
+              <path d="M 68 106 A 64 64 0 0 1 180 91" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" />
+              <path d="M 182 68 L 180 91 L 157 85" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M 188 150 A 64 64 0 0 1 76 165" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" />
+              <path d="M 74 188 L 76 165 L 99 171" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="98" cy="128" r="16" fill="#FFFFFF" />
+              <circle cx="98" cy="128" r="8" fill="#4F46E5" />
+              <circle cx="158" cy="128" r="16" fill="#FFFFFF" />
+              <circle cx="158" cy="128" r="8" fill="#10B981" />
+            </svg>
+          </div>
+
+          <button id="rail-chats" class="rail-btn active" type="button">
+            <span class="rail-icon">💬</span>
+            <span id="rail-chats-label" class="rail-label"></span>
+            <span id="rail-unread-badge" class="rail-badge hidden">0</span>
+          </button>
+
+          <button id="rail-files" class="rail-btn" type="button">
+            <span class="rail-icon">📁</span>
+            <span id="rail-files-label" class="rail-label"></span>
+          </button>
+
+          <button id="rail-split" class="rail-btn" type="button">
+            <span class="rail-icon">▥</span>
+            <span id="rail-split-label" class="rail-label"></span>
+          </button>
+
+          <div class="rail-spacer"></div>
+
+          <div id="rail-account-badge" class="rail-account hidden"></div>
+          <button id="btn-switch-account-rail" class="rail-btn rail-logout" type="button">
+            <span class="rail-icon">⇄</span>
+            <span id="btn-switch-rail-label" class="rail-label"></span>
+          </button>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main id="main-area" class="main-area">
+          <!-- Chats Tab -->
+          <section id="tab-chats" class="tab-view active-tab">
+            <!-- Conversation List -->
+            <div id="conv-list-pane" class="pane conv-list-pane">
+              <div class="pane-toolbar">
+                <input id="conv-search" type="search" class="input" placeholder="Search chats..." />
+                <button id="btn-new-group" class="btn btn-primary btn-sm" type="button">+</button>
+              </div>
+              <div id="quick-peers-strip" class="peers-strip hidden"></div>
+              <div id="conv-list" class="list-stack"></div>
+            </div>
+
+            <!-- Thread Pane -->
+            <div id="thread-pane" class="pane thread-pane">
+              <div id="thread-empty-state" class="thread-empty-state">
+                <svg viewBox="0 0 256 256" width="64" height="64">
+                  <defs>
+                    <linearGradient id="ts-bg-empty" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#4F46E5" />
+                      <stop offset="50%" stop-color="#0EA5E9" />
+                      <stop offset="100%" stop-color="#10B981" />
+                    </linearGradient>
+                  </defs>
+                  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-bg-empty)" opacity="0.9" />
+                  <line x1="98" y1="128" x2="158" y2="128" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="7" stroke-linecap="round" />
+                  <path d="M 68 106 A 64 64 0 0 1 180 91" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" />
+                  <path d="M 182 68 L 180 91 L 157 85" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M 188 150 A 64 64 0 0 1 76 165" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" />
+                  <path d="M 74 188 L 76 165 L 99 171" fill="none" stroke="#E0F2FE" stroke-width="16" stroke-linecap="round" stroke-linejoin="round" />
+                  <circle cx="98" cy="128" r="16" fill="#FFFFFF" />
+                  <circle cx="98" cy="128" r="8" fill="#4F46E5" />
+                  <circle cx="158" cy="128" r="16" fill="#FFFFFF" />
+                  <circle cx="158" cy="128" r="8" fill="#10B981" />
+                </svg>
+                <h2 class="empty-state-title">TwinSync Pro</h2>
+                <p id="thread-empty-desc" class="muted"></p>
+              </div>
+
+              <div id="thread-active-content" class="thread-active-content hidden">
+                <div class="thread-header">
+                  <button id="btn-back-chats" class="icon-btn back-chats-btn" type="button">←</button>
+                  <div id="thread-avatar" class="avatar sm"></div>
+                  <div class="thread-meta">
+                    <div id="thread-title" class="thread-title"></div>
+                    <div id="thread-subtitle" class="thread-subtitle"></div>
+                  </div>
+                  <button id="btn-thread-search" class="icon-btn" type="button">🔍</button>
+                </div>
+                <div id="thread-search-bar" class="search-inline hidden">
+                  <input id="msg-search-input" type="search" class="input" placeholder="Search messages..." />
+                </div>
+                <div id="messages-list" class="messages-scroll"></div>
+                <div id="reply-banner" class="reply-banner hidden">
+                  <div class="reply-banner-body">
+                    <div id="reply-banner-author" class="reply-author"></div>
+                    <div id="reply-banner-snippet" class="reply-snippet"></div>
+                  </div>
+                  <button id="btn-cancel-reply" class="icon-btn sm" type="button">✕</button>
+                </div>
+                <div id="recording-bar" class="recording-bar hidden">
+                  <button id="btn-rec-cancel" class="btn btn-ghost btn-sm" type="button">✕</button>
+                  <div class="rec-indicator">
+                    <span class="rec-dot"></span>
+                    <span id="rec-timer">00:00</span>
+                  </div>
+                  <button id="btn-rec-send" class="btn btn-primary btn-sm" type="button">Send</button>
+                </div>
+                <form id="composer-form" class="composer-bar">
+                  <input id="chat-file-input" type="file" class="hidden" />
+                  <button id="btn-attach-file" class="icon-btn" type="button" title="Attach">📎</button>
+                  <input id="composer-input" type="text" class="input composer-input" autocomplete="off" placeholder="Message..." />
+                  <button id="btn-voice-rec" class="icon-btn" type="button" title="Voice Note">🎤</button>
+                  <button id="btn-send-msg" class="btn btn-primary send-btn" type="submit">➤</button>
+                </form>
+              </div>
+            </div>
+          </section>
+
+          <!-- Files (Vault) Tab -->
+          <section id="tab-files" class="tab-view">
+            <div class="pane-toolbar">
+              <input id="vault-search-input" type="search" class="input" placeholder="Search Vault..." />
+              <button id="btn-vault-new-folder" class="btn btn-ghost btn-sm" type="button" title="New Folder">📁+</button>
+              <input id="vault-upload-input" type="file" class="hidden" />
+              <button id="btn-vault-upload" class="btn btn-primary btn-sm" type="button" title="Upload">⬆</button>
+            </div>
+            <div id="vault-breadcrumbs" class="breadcrumbs"></div>
+            <div id="vault-list" class="list-stack"></div>
+          </section>
+        </main>
+      </div>
+
+      <!-- Mobile Bottom Navigation (< 768px) -->
+      <nav class="bottom-nav">
+        <button id="nav-chats" class="nav-item active" type="button">
+          <span class="nav-icon">💬</span>
+          <span id="nav-chats-label" class="nav-label">Chats</span>
+          <span id="nav-unread-badge" class="badge hidden">0</span>
+        </button>
+        <button id="nav-files" class="nav-item" type="button">
+          <span class="nav-icon">📁</span>
+          <span id="nav-files-label" class="nav-label">Files</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- Desktop Floating Message Context Menu -->
+    <div id="msg-context-menu" class="msg-context-menu hidden" role="menu"></div>
+
+    <!-- Mobile Bottom Action Sheet -->
+    <div id="bottom-sheet-backdrop" class="bottom-sheet-backdrop hidden">
+      <div id="bottom-sheet" class="bottom-sheet" role="dialog"></div>
+    </div>
 
     <!-- Generic Modal Backdrop -->
     <div id="modal-backdrop" class="modal-backdrop hidden">

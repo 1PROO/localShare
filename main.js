@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 
-const { WorkMeshDatabase } = require('./database');
+const { TwinSyncDatabase } = require('./database');
 const { MeshNetwork } = require('./meshNetwork');
 const {
   SandboxManager,
@@ -18,12 +18,13 @@ const {
 const { MobileServer } = require('./mobileServer');
 
 function resolveVaultPaths() {
-  const isProdWin = process.platform === 'win32' && !process.env.WORKMESH_VAULT_DIR;
+  const customDir = process.env.TWINSYNC_VAULT_DIR || process.env.WORKMESH_VAULT_DIR;
+  const isProdWin = process.platform === 'win32' && !customDir;
   const vaultRoot = isProdWin
-    ? 'C:\\ProgramData\\WorkMesh_Vault'
-    : (process.env.WORKMESH_VAULT_DIR
-        ? path.resolve(process.env.WORKMESH_VAULT_DIR)
-        : path.join(os.homedir(), '.workmesh_vault'));
+    ? 'C:\\ProgramData\\TwinSync_Vault'
+    : (customDir
+        ? path.resolve(customDir)
+        : path.join(os.homedir(), '.twinsync_vault'));
 
   return {
     vaultRoot,
@@ -51,7 +52,7 @@ function ensureVaultPaths(vaultPaths) {
   fs.mkdirSync(vaultPaths.stagingDir, { recursive: true });
 
   if (process.platform === 'win32') {
-    if (!process.env.WORKMESH_VAULT_DIR) {
+    if (!(process.env.TWINSYNC_VAULT_DIR || process.env.WORKMESH_VAULT_DIR)) {
       applyHiddenSystemAttribWin(vaultPaths.vaultRoot);
     }
     applyHiddenSystemAttribWin(vaultPaths.trashDir);
@@ -65,7 +66,11 @@ function sanitizeIdentityForDesktop(identity) {
   return {
     uuid: identity.uuid,
     display_name: identity.display_name || '',
+    name: identity.display_name || '',
     avatar_data: identity.avatar_data || null,
+    avatar: identity.avatar_data || null,
+    device_type: 'desktop',
+    has_pin: Boolean(identity.pin_hash),
     onboarded: Boolean(identity.onboarded),
     onboarding_done: Boolean(identity.onboarded),
     master_recovery_key: identity.master_recovery_key || '',
@@ -78,8 +83,13 @@ function sanitizeIdentityForDesktop(identity) {
 function sanitizePeersForDesktop(peers) {
   return (peers || []).map((p) => ({
     uuid: p.uuid,
-    display_name: p.display_name || '',
-    avatar_data: p.avatar_data || null,
+    display_name: p.display_name || p.name || '',
+    name: p.name || p.display_name || '',
+    avatar_data: p.avatar_data || p.avatar || null,
+    avatar: p.avatar || p.avatar_data || null,
+    device_type: p.device_type || 'desktop',
+    has_pin: Boolean(p.pin_hash),
+    gateway_uuid: p.gateway_uuid || null,
     ip: p.ip || '',
     ws_port: p.ws_port || 0,
     status: p.status || 'offline',
@@ -130,7 +140,7 @@ if (process.versions && process.versions.electron) {
   if (!gotSingleInstanceLock) {
     app.quit();
   } else {
-    app.setAppUserModelId('com.workmesh.desktop');
+    app.setAppUserModelId('com.twinsync.pro');
 
     const startHidden = process.argv.includes('--hidden');
     let mainWindow = null;
@@ -166,7 +176,7 @@ if (process.versions && process.versions.electron) {
 
       const template = [
         {
-          label: isAr ? 'فتح WorkMesh' : 'Open WorkMesh',
+          label: isAr ? 'فتح TwinSync Pro' : 'Open TwinSync Pro',
           click: () => showAndFocusMainWindow()
         },
         {
@@ -213,7 +223,7 @@ if (process.versions && process.versions.electron) {
         img = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png'));
       }
       tray = new Tray(img);
-      tray.setToolTip('WorkMesh');
+      tray.setToolTip('TwinSync Pro');
       tray.on('click', () => showAndFocusMainWindow());
       tray.on('double-click', () => showAndFocusMainWindow());
       tray.on('balloon-click', () => {
@@ -239,7 +249,7 @@ if (process.versions && process.versions.electron) {
         minHeight: 620,
         show: !startHidden,
         icon: iconPath,
-        title: 'WorkMesh',
+        title: 'TwinSync Pro',
         webPreferences: {
           preload: path.join(__dirname, 'preload.js'),
           contextIsolation: true,
@@ -248,7 +258,7 @@ if (process.versions && process.versions.electron) {
         }
       });
 
-      if (process.env.WORKMESH_DEV === '1') {
+      if (process.env.TWINSYNC_DEV === '1' || process.env.WORKMESH_DEV === '1') {
         mainWindow.loadURL('http://localhost:5173');
       } else {
         mainWindow.loadFile(path.join(__dirname, 'dist-renderer', 'index.html'));
@@ -266,6 +276,7 @@ if (process.versions && process.versions.electron) {
       if (!msg || !db) return;
       const identity = db.getIdentity();
       if (!identity || msg.sender_uuid === identity.uuid) return;
+      if (!msg.conversation_id || !db.isConversationMember(msg.conversation_id, identity.uuid)) return;
 
       const soundMuted = Boolean(db.getSetting('sound_muted', false));
       if (!soundMuted) {
@@ -276,7 +287,7 @@ if (process.versions && process.versions.electron) {
         !mainWindow || !mainWindow.isVisible() || !mainWindow.isFocused();
       if (!windowHiddenOrUnfocused) return;
 
-      const title = msg.sender_name || 'WorkMesh';
+      const title = msg.sender_name || 'TwinSync Pro';
       let body = msg.body || '';
       if (!body) {
         if (msg.type === 'voice') body = '🎤 Voice Note';
@@ -362,6 +373,15 @@ if (process.versions && process.versions.electron) {
         };
       }));
 
+      ipcMain.handle('app:updateAccountPin', wrapIpcHandler((pin) => {
+        const updated = db.updateLocalPin(pin);
+        meshNetwork.broadcastProfileUpdate();
+        return {
+          ok: true,
+          identity: sanitizeIdentityForDesktop(updated)
+        };
+      }));
+
       ipcMain.handle('app:setSetting', wrapIpcHandler((key, value) => {
         db.setSetting(key, value);
         if (key === 'sound_muted' || key === 'lang') {
@@ -391,7 +411,7 @@ if (process.versions && process.versions.electron) {
       }));
 
       ipcMain.handle('chat:getMessages', wrapIpcHandler((convId, opts) => {
-        const messages = db.getMessages(convId, opts || {});
+        const messages = db.getMessages(convId, { ...(opts || {}), actorUuid: getMyUuid() });
         return { ok: true, messages };
       }));
 
@@ -743,24 +763,49 @@ if (process.versions && process.versions.electron) {
     };
 
     const wireEngineEvents = () => {
-      const forwardMeshEvents = [
+      const getMyUuid = () => db.getIdentity()?.uuid || '';
+
+      const chatConvEvents = [
         'chat:edit',
         'chat:delete',
         'chat:typing',
         'chat:receipt',
-        'chat:reaction',
-        'conversations:changed',
+        'chat:reaction'
+      ];
+
+      for (const evt of chatConvEvents) {
+        meshNetwork.on(evt, (payload) => {
+          const convId = payload?.conversation_id || payload?.conversationId;
+          const myUuid = getMyUuid();
+          if (!convId || !myUuid || !db.isConversationMember(convId, myUuid)) return;
+          sendToRenderer(evt, payload);
+        });
+      }
+
+      meshNetwork.on('conversations:changed', (payload) => {
+        const myUuid = getMyUuid();
+        if (payload?.conversationId && myUuid && !db.isConversationMember(payload.conversationId, myUuid)) {
+          return;
+        }
+        sendToRenderer('conversations:changed', payload);
+      });
+
+      const forwardVaultEvents = [
         'vault:changed',
         'presence:changed',
         'trash:changed',
         'transfer:progress'
       ];
 
-      for (const evt of forwardMeshEvents) {
+      for (const evt of forwardVaultEvents) {
         meshNetwork.on(evt, (payload) => sendToRenderer(evt, payload));
       }
 
       meshNetwork.on('chat:message', (msg) => {
+        const myUuid = getMyUuid();
+        if (!msg?.conversation_id || !myUuid || !db.isConversationMember(msg.conversation_id, myUuid)) {
+          return;
+        }
         sendToRenderer('chat:message', msg);
         notifyIncomingMessage(msg);
       });
@@ -809,8 +854,16 @@ if (process.versions && process.versions.electron) {
       vaultPaths = resolveVaultPaths();
       ensureVaultPaths(vaultPaths);
 
-      const dbPath = path.join(vaultPaths.metaDir, 'workmesh.db');
-      db = new WorkMeshDatabase(dbPath);
+      const dbPath = path.join(vaultPaths.metaDir, 'twinsync.db');
+      const legacyDbPath = path.join(vaultPaths.metaDir, 'workmesh.db');
+      if (!fs.existsSync(dbPath) && fs.existsSync(legacyDbPath)) {
+        try {
+          fs.copyFileSync(legacyDbPath, dbPath);
+          if (fs.existsSync(legacyDbPath + '-wal')) fs.copyFileSync(legacyDbPath + '-wal', dbPath + '-wal');
+          if (fs.existsSync(legacyDbPath + '-shm')) fs.copyFileSync(legacyDbPath + '-shm', dbPath + '-shm');
+        } catch (_) {}
+      }
+      db = new TwinSyncDatabase(dbPath);
       db.ensureIdentity();
 
       meshNetwork = new MeshNetwork({ db, vaultPaths });
@@ -826,7 +879,7 @@ if (process.versions && process.versions.electron) {
       createMainWindow();
       createTray();
     }).catch((err) => {
-      console.error('WorkMesh startup error:', err);
+      console.error('TwinSync Pro startup error:', err);
       app.quit();
     });
 

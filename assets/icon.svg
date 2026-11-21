@@ -1,44 +1,39 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <linearGradient id="wm-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <linearGradient id="ts-bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#4F46E5" />
-      <stop offset="50%" stop-color="#3B82F6" />
+      <stop offset="50%" stop-color="#0EA5E9" />
       <stop offset="100%" stop-color="#10B981" />
     </linearGradient>
-    <linearGradient id="wm-shine" x1="0%" y1="0%" x2="80%" y2="80%">
+    <radialGradient id="ts-sheen" cx="24%" cy="18%" r="65%">
       <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24" />
       <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
-    </linearGradient>
+    </radialGradient>
+    <radialGradient id="ts-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#E0F2FE" stop-opacity="0.45" />
+      <stop offset="55%" stop-color="#E0F2FE" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#E0F2FE" stop-opacity="0" />
+    </radialGradient>
   </defs>
 
-  <!-- Squircle background -->
-  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#wm-bg)" />
-  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#wm-shine)" />
-  <rect x="19" y="19" width="218" height="218" rx="45" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="3" />
+  <!-- Rounded squircle background -->
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-bg)" />
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-sheen)" />
+  <rect x="13.5" y="13.5" width="229" height="229" rx="54.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="3" />
 
-  <!-- Mesh network links -->
-  <g stroke="#E0F2FE" stroke-opacity="0.88" stroke-width="11" stroke-linecap="round">
-    <line x1="128" y1="58" x2="128" y2="140" />
-    <line x1="60" y1="188" x2="128" y2="140" />
-    <line x1="196" y1="188" x2="128" y2="140" />
-    <line x1="60" y1="188" x2="196" y2="188" stroke-width="8" stroke-opacity="0.65" />
+  <!-- Symmetric glowing twin nodes -->
+  <circle cx="100" cy="128" r="26" fill="url(#ts-glow)" />
+  <circle cx="156" cy="128" r="26" fill="url(#ts-glow)" />
+
+  <!-- Mirrored interlocking smooth sync arcs with rounded chevron arrowheads -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+    <path d="M 62.32 110.40 A 68 68 0 0 1 193.68 110.40" stroke="#FFFFFF" />
+    <path d="M 200.52 90.54 L 193.68 110.40 L 175.31 100.22" stroke="#FFFFFF" />
+    <path d="M 193.68 145.60 A 68 68 0 0 1 62.32 145.60" stroke="#E0F2FE" />
+    <path d="M 55.48 165.46 L 62.32 145.60 L 80.69 155.78" stroke="#E0F2FE" />
   </g>
 
-  <!-- Central workspace folder + chat hub -->
-  <path d="M84 114 C84 106 90 100 98 100 L122 100 C127 100 131 103 134 107 L138 111 L158 111 C166 111 172 117 172 125 L172 162 C172 170 166 176 158 176 L98 176 C90 176 84 170 84 162 Z" fill="#FFFFFF" />
-  <rect x="102" y="132" width="44" height="8" rx="4" fill="#4F46E5" />
-  <rect x="102" y="146" width="30" height="8" rx="4" fill="#4F46E5" />
-  <circle cx="150" cy="150" r="6" fill="#10B981" />
-
-  <!-- Peer nodes -->
-  <g>
-    <circle cx="128" cy="58" r="18" fill="#FFFFFF" />
-    <circle cx="128" cy="58" r="9.5" fill="#10B981" />
-
-    <circle cx="60" cy="188" r="18" fill="#FFFFFF" />
-    <circle cx="60" cy="188" r="9.5" fill="#4F46E5" />
-
-    <circle cx="196" cy="188" r="18" fill="#FFFFFF" />
-    <circle cx="196" cy="188" r="9.5" fill="#10B981" />
-  </g>
+  <!-- Crisp twin node cores -->
+  <circle cx="100" cy="128" r="12.5" fill="#FFFFFF" />
+  <circle cx="156" cy="128" r="12.5" fill="#E0F2FE" />
 </svg>

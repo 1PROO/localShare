@@ -90,13 +90,14 @@ export default function TrashView({
   );
 
   const loadTrash = useCallback(async () => {
-    if (!window.workmesh?.trashList) {
+    const api = window.twinsync || window.workmesh;
+    if (!api?.trashList) {
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      const res = await window.workmesh.trashList();
+      const res = await api.trashList();
       const list = Array.isArray(res) ? res : res?.items || [];
       setItems(list);
     } catch (err) {
@@ -111,12 +112,13 @@ export default function TrashView({
   }, [loadTrash, refreshTrigger]);
 
   const handleRestore = async (item) => {
+    const api = window.twinsync || window.workmesh;
     const trashId = item.id || item.trash_id;
     const itemName =
       item.name || (item.original_rel_path || item.rel_path || '').split('/').pop() || '';
     setBusyId(trashId);
     try {
-      const res = await window.workmesh.trashRestore(trashId);
+      const res = await api.trashRestore(trashId);
       if (res && res.ok === false) {
         throw new Error(res.error || res.message || t('actionForbidden'));
       }
@@ -131,13 +133,14 @@ export default function TrashView({
 
   const handleDeleteForever = async () => {
     if (!confirmDeleteItem) return;
+    const api = window.twinsync || window.workmesh;
     const item = confirmDeleteItem;
     const trashId = item.id || item.trash_id;
     const itemName =
       item.name || (item.original_rel_path || item.rel_path || '').split('/').pop() || '';
     setBusyId(trashId);
     try {
-      const res = await window.workmesh.trashDeleteForever(trashId);
+      const res = await api.trashDeleteForever(trashId);
       if (res && res.ok === false) {
         throw new Error(res.error || res.message || t('actionForbidden'));
       }

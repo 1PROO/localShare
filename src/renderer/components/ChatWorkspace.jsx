@@ -13,7 +13,6 @@ import {
   Forward,
   Edit3,
   Trash2,
-  Smile,
   Check,
   CheckCheck,
   X,
@@ -31,6 +30,8 @@ import {
   ArrowRight,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Copy,
   RefreshCw,
   AlertTriangle,
   MessageSquare,
@@ -38,7 +39,9 @@ import {
   CheckCircle2,
   FolderPlus
 } from 'lucide-react';
-import { UserAvatar } from './OnboardingModal';
+import { UserAvatar, DeviceTypeBadge, copyTextSafe } from './OnboardingModal';
+
+const getApi = () => window.twinsync || window.workmesh;
 
 const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
 
@@ -91,7 +94,7 @@ function formatDurationMs(ms) {
 }
 
 function buildWaveformBars(seedStr, count = 28) {
-  const s = String(seedStr || 'workmesh');
+  const s = String(seedStr || 'twinsync');
   let h = 2166136261;
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
@@ -386,7 +389,7 @@ export default function ChatWorkspace({
   const [replyTo, setReplyTo] = useState(null);
   const [editingMsg, setEditingMsg] = useState(null);
   const [editBody, setEditBody] = useState('');
-  const [reactionTargetId, setReactionTargetId] = useState(null);
+  const [msgMenu, setMsgMenu] = useState(null); // { msg, x, y }
   const [highlightedMsgId, setHighlightedMsgId] = useState(null);
 
   // Typing & transfer progress
@@ -424,6 +427,8 @@ export default function ChatWorkspace({
 
   const blobCacheRef = useRef(new Map());
   const messagesEndRef = useRef(null);
+  const msgMenuRef = useRef(null);
+  const composerInputRef = useRef(null);
   const typingThrottleRef = useRef(0);
   const typingStopTimerRef = useRef(null);
   const activeChatIdRef = useRef(activeChatId);
@@ -455,11 +460,54 @@ export default function ChatWorkspace({
   useEffect(() => {
     setReplyTo(null);
     setEditingMsg(null);
-    setReactionTargetId(null);
+    setMsgMenu(null);
     setShowMsgSearch(false);
     setMsgSearch('');
     setDebouncedMsgSearch('');
   }, [activeChatId]);
+
+  // Close floating message dropdown menu on outside click or Escape
+  useEffect(() => {
+    if (!msgMenu) return undefined;
+    const handlePointerDown = (e) => {
+      if (msgMenuRef.current && msgMenuRef.current.contains(e.target)) return;
+      setMsgMenu(null);
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setMsgMenu(null);
+      }
+    };
+    const handleResize = () => setMsgMenu(null);
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [msgMenu]);
+
+  const openMessageMenu = useCallback((e, msg) => {
+    if (!msg || msg.deleted_at) return;
+    const menuW = 228;
+    const menuH = 268;
+    let rawX = e.clientX;
+    let rawY = e.clientY;
+    if (!rawX && !rawY && e.currentTarget) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      rawX = rect.left;
+      rawY = rect.bottom + 4;
+    }
+    const maxX = Math.max(8, window.innerWidth - menuW - 8);
+    const maxY = Math.max(8, window.innerHeight - menuH - 8);
+    const preferredX = rawX + menuW > window.innerWidth - 8 ? rawX - menuW : rawX;
+    const preferredY = rawY + menuH > window.innerHeight - 8 ? rawY - menuH : rawY;
+    const x = Math.max(8, Math.min(preferredX, maxX));
+    const y = Math.max(8, Math.min(preferredY, maxY));
+    setMsgMenu({ msg, x, y });
+  }, []);
 
   const getCachedBlobUrl = useCallback(async (blobId, fileName) => {
     const key = `${blobId}:${fileName}`;
@@ -467,7 +515,7 @@ export default function ChatWorkspace({
       return blobCacheRef.current.get(key);
     }
     try {
-      const res = await window.workmesh.getBlobDataUrl(blobId, fileName);
+      const res = await getApi().getBlobDataUrl(blobId, fileName);
       if (res?.ok && res.dataUrl) {
         blobCacheRef.current.set(key, res.dataUrl);
         return res.dataUrl;
@@ -480,13 +528,14 @@ export default function ChatWorkspace({
 
   const loadMessages = useCallback(
     async (convId, searchQuery = '') => {
-      if (!convId || !window.workmesh?.getMessages) {
+      const api = getApi();
+      if (!convId || !api?.getMessages) {
         setMessages([]);
         return;
       }
       setLoadingMsgs(true);
       try {
-        const res = await window.workmesh.getMessages(convId, {
+        const res = await api.getMessages(convId, {
           limit: 150,
           search: searchQuery || undefined
         });
@@ -507,8 +556,9 @@ export default function ChatWorkspace({
       return;
     }
     loadMessages(activeChatId, debouncedMsgSearch);
-    if (!debouncedMsgSearch && window.workmesh?.markRead) {
-      window.workmesh.markRead(activeChatId).then(() => {
+    const api = getApi();
+    if (!debouncedMsgSearch && api?.markRead) {
+      api.markRead(activeChatId).then(() => {
         onRefreshConversations?.();
       }).catch(() => {});
     }
@@ -523,11 +573,12 @@ export default function ChatWorkspace({
 
   // Real-time event listeners
   useEffect(() => {
-    if (!window.workmesh?.onEvent) return undefined;
+    const api = getApi();
+    if (!api?.onEvent) return undefined;
     const unsubs = [];
 
     unsubs.push(
-      window.workmesh.onEvent('chat:message', (msg) => {
+      api.onEvent('chat:message', (msg) => {
         if (!msg || msg.conversation_id !== activeChatIdRef.current) return;
         setMessages((prev) => {
           const exists = prev.some((m) => m.id === msg.id);
@@ -547,7 +598,7 @@ export default function ChatWorkspace({
           });
         }
         if (msg.sender_uuid !== identity?.uuid) {
-          window.workmesh.markRead?.(msg.conversation_id).then(() => {
+          api.markRead?.(msg.conversation_id).then(() => {
             onRefreshConversations?.();
           }).catch(() => {});
         }
@@ -555,7 +606,7 @@ export default function ChatWorkspace({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('chat:edit', (updated) => {
+      api.onEvent('chat:edit', (updated) => {
         if (!updated || updated.conversation_id !== activeChatIdRef.current) return;
         setMessages((prev) =>
           prev.map((m) => (m.id === updated.id ? updated : m))
@@ -564,7 +615,7 @@ export default function ChatWorkspace({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('chat:delete', (updated) => {
+      api.onEvent('chat:delete', (updated) => {
         if (!updated || updated.conversation_id !== activeChatIdRef.current) return;
         setMessages((prev) =>
           prev.map((m) => (m.id === updated.id ? updated : m))
@@ -573,7 +624,7 @@ export default function ChatWorkspace({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('chat:typing', (payload) => {
+      api.onEvent('chat:typing', (payload) => {
         if (!payload?.conversationId || !payload?.peerUuid) return;
         if (payload.peerUuid === identity?.uuid) return;
         setTypingMap((prev) => {
@@ -592,7 +643,7 @@ export default function ChatWorkspace({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('chat:receipt', (payload) => {
+      api.onEvent('chat:receipt', (payload) => {
         if (!payload || payload.conversationId !== activeChatIdRef.current) return;
         const ids = new Set(payload.messageIds || []);
         const rank = { sent: 1, delivered: 2, read: 3 };
@@ -608,7 +659,7 @@ export default function ChatWorkspace({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('chat:reaction', (payload) => {
+      api.onEvent('chat:reaction', (payload) => {
         if (!payload?.messageId || payload.conversationId !== activeChatIdRef.current) return;
         setMessages((prev) =>
           prev.map((m) =>
@@ -621,7 +672,7 @@ export default function ChatWorkspace({
     );
 
     unsubs.push(
-      window.workmesh.onEvent('transfer:progress', (payload) => {
+      api.onEvent('transfer:progress', (payload) => {
         if (!payload) return;
         if (payload.kind === 'chat_blob' || payload.blobId) {
           if (payload.percent >= 100 || payload.done) {
@@ -683,7 +734,7 @@ export default function ChatWorkspace({
 
   const handleStartDm = async (peerUuid) => {
     try {
-      const res = await window.workmesh.ensureDm(peerUuid);
+      const res = await getApi().ensureDm(peerUuid);
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
       }
@@ -703,7 +754,7 @@ export default function ChatWorkspace({
     if (!trimmed) return;
     setCreatingGroup(true);
     try {
-      const res = await window.workmesh.createGroup({
+      const res = await getApi().createGroup({
         name: trimmed,
         memberUuids: groupMemberUuids
       });
@@ -724,8 +775,9 @@ export default function ChatWorkspace({
   };
 
   const emitTypingSignal = (typing) => {
-    if (!activeChatId || !window.workmesh?.sendTyping) return;
-    window.workmesh.sendTyping(activeChatId, typing).catch(() => {});
+    const api = getApi();
+    if (!activeChatId || !api?.sendTyping) return;
+    api.sendTyping(activeChatId, typing).catch(() => {});
   };
 
   const handleComposerChange = (val) => {
@@ -754,7 +806,7 @@ export default function ChatWorkspace({
     emitTypingSignal(false);
 
     try {
-      const res = await window.workmesh.sendMessage({
+      const res = await getApi().sendMessage({
         conversationId: activeChatId,
         type: 'text',
         body,
@@ -781,7 +833,7 @@ export default function ChatWorkspace({
     const caption = composerText.trim();
     const currentReply = replyTo;
     try {
-      const res = await window.workmesh.pickAndSendChatFiles(
+      const res = await getApi().pickAndSendChatFiles(
         activeChatId,
         caption,
         currentReply?.id || null
@@ -866,7 +918,7 @@ export default function ChatWorkspace({
           const currentReply = replyTo;
           setReplyTo(null);
           try {
-            const res = await window.workmesh.sendMessage({
+            const res = await getApi().sendMessage({
               conversationId: activeChatIdRef.current,
               type: 'voice',
               voiceDataUrl,
@@ -926,7 +978,10 @@ export default function ChatWorkspace({
     e.stopPropagation();
     dragDepthRef.current += 1;
     const types = Array.from(e.dataTransfer?.types || []);
-    if (types.includes('application/x-workmesh-vault')) {
+    if (
+      types.includes('application/x-twinsync-vault') ||
+      types.includes('application/x-workmesh-vault')
+    ) {
       setDragKind('vault');
     } else if (types.includes('Files')) {
       setDragKind('os');
@@ -957,12 +1012,14 @@ export default function ChatWorkspace({
     setDragKind(null);
     if (!activeChatId) return;
 
-    const vaultRaw = e.dataTransfer?.getData('application/x-workmesh-vault');
+    const vaultRaw =
+      e.dataTransfer?.getData('application/x-twinsync-vault') ||
+      e.dataTransfer?.getData('application/x-workmesh-vault');
     if (vaultRaw) {
       try {
         const vaultItem = JSON.parse(vaultRaw);
         if (!vaultItem?.relPath) return;
-        const permRes = await window.workmesh.checkVaultSharePermission(vaultItem.relPath);
+        const permRes = await getApi().checkVaultSharePermission(vaultItem.relPath);
         if (permRes?.isProtected) {
           setShareChoiceModal({
             relPath: vaultItem.relPath,
@@ -1008,7 +1065,7 @@ export default function ChatWorkspace({
 
     try {
       if (modal.kind === 'os') {
-        const res = await window.workmesh.sendDroppedOsPathsToChat(
+        const res = await getApi().sendDroppedOsPathsToChat(
           activeChatId,
           modal.osPaths,
           modal.caption.trim(),
@@ -1025,7 +1082,7 @@ export default function ChatWorkspace({
           });
         }
       } else {
-        const res = await window.workmesh.shareVaultItemToChat({
+        const res = await getApi().shareVaultItemToChat({
           conversationId: activeChatId,
           relPath: modal.relPath,
           mode: 'deeplink',
@@ -1056,7 +1113,7 @@ export default function ChatWorkspace({
     setReplyTo(null);
 
     try {
-      const res = await window.workmesh.shareVaultItemToChat({
+      const res = await getApi().shareVaultItemToChat({
         conversationId: activeChatId,
         relPath: modal.relPath,
         mode: modal.mode,
@@ -1081,7 +1138,7 @@ export default function ChatWorkspace({
   const handleStartEdit = (msg) => {
     setEditingMsg(msg);
     setEditBody(msg.body || '');
-    setReactionTargetId(null);
+    setMsgMenu(null);
   };
 
   const handleSaveEdit = async (e) => {
@@ -1090,7 +1147,7 @@ export default function ChatWorkspace({
     const nextBody = editBody.trim();
     if (!nextBody) return;
     try {
-      const res = await window.workmesh.editMessage(editingMsg.id, nextBody);
+      const res = await getApi().editMessage(editingMsg.id, nextBody);
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
       }
@@ -1108,8 +1165,9 @@ export default function ChatWorkspace({
   };
 
   const handleDeleteMessage = async (msg) => {
+    setMsgMenu(null);
     try {
-      const res = await window.workmesh.deleteMessage(msg.id);
+      const res = await getApi().deleteMessage(msg.id);
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
       }
@@ -1125,9 +1183,9 @@ export default function ChatWorkspace({
   };
 
   const handleToggleReaction = async (msgId, emoji) => {
-    setReactionTargetId(null);
+    setMsgMenu(null);
     try {
-      const res = await window.workmesh.toggleReaction(msgId, emoji);
+      const res = await getApi().toggleReaction(msgId, emoji);
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
       }
@@ -1141,12 +1199,24 @@ export default function ChatWorkspace({
     }
   };
 
+  const handleCopyMessageText = async (msg) => {
+    setMsgMenu(null);
+    const textToCopy = msg?.body || getMessagePreviewText(msg, t);
+    if (!textToCopy) return;
+    const ok = await copyTextSafe(textToCopy);
+    if (ok) {
+      onToast?.(t('copied'), 'success');
+    } else {
+      onToast?.(t('error'), 'error');
+    }
+  };
+
   const handleForwardToConversation = async (targetConvId) => {
     if (!forwardMsg || !targetConvId) return;
     setForwarding(true);
     try {
       const att = parseAttachment(forwardMsg);
-      const res = await window.workmesh.sendMessage({
+      const res = await getApi().sendMessage({
         conversationId: targetConvId,
         type: forwardMsg.type || 'text',
         body: forwardMsg.body || '',
@@ -1172,7 +1242,7 @@ export default function ChatWorkspace({
   // Smart Attachment Card Actions
   const handleOpenAttachment = async (att) => {
     try {
-      const res = await window.workmesh.openChatAttachment(att);
+      const res = await getApi().openChatAttachment(att);
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
       }
@@ -1191,7 +1261,7 @@ export default function ChatWorkspace({
   const handleOpenExtractedEntry = async (entryRelPath) => {
     if (!folderPreviewModal?.sessionId) return;
     try {
-      const res = await window.workmesh.openExtractedFolderEntry(
+      const res = await getApi().openExtractedFolderEntry(
         folderPreviewModal.sessionId,
         entryRelPath
       );
@@ -1205,7 +1275,7 @@ export default function ChatWorkspace({
 
   const handleSaveAttachmentToPc = async (att) => {
     try {
-      const res = await window.workmesh.saveChatAttachmentToPc(att);
+      const res = await getApi().saveChatAttachmentToPc(att);
       if (res?.canceled) return;
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
@@ -1229,7 +1299,7 @@ export default function ChatWorkspace({
       newFolderName: ''
     }));
     try {
-      const res = await window.workmesh.vaultList(folderPath);
+      const res = await getApi().vaultList(folderPath);
       const rawItems = Array.isArray(res) ? res : res?.items || [];
       const dirItems = rawItems.filter((item) => Boolean(item.is_dir));
       setVaultPickerModal((prev) =>
@@ -1258,7 +1328,7 @@ export default function ChatWorkspace({
     e.preventDefault();
     if (!vaultPickerModal?.blockingAncestor?.relPath) return;
     try {
-      const res = await window.workmesh.vaultUnlockFolder(
+      const res = await getApi().vaultUnlockFolder(
         vaultPickerModal.blockingAncestor.relPath,
         vaultPickerModal.password
       );
@@ -1281,7 +1351,7 @@ export default function ChatWorkspace({
     const name = vaultPickerModal?.newFolderName?.trim();
     if (!name) return;
     try {
-      const res = await window.workmesh.vaultCreateFolder(
+      const res = await getApi().vaultCreateFolder(
         vaultPickerModal.currentFolder,
         name
       );
@@ -1296,7 +1366,7 @@ export default function ChatWorkspace({
 
   const handleSaveAttachmentToChosenVault = async (att, targetFolder, strategy = 'prompt') => {
     try {
-      const res = await window.workmesh.saveChatAttachmentToVault(
+      const res = await getApi().saveChatAttachmentToVault(
         att,
         targetFolder,
         strategy
@@ -1454,8 +1524,9 @@ export default function ChatWorkspace({
                           }`}
                         />
                       </div>
-                      <span className="text-[10px] font-medium text-slate-600 dark:text-slate-300 truncate w-full text-center">
-                        {peer.display_name || t('unknown')}
+                      <span className="inline-flex items-center justify-center gap-0.5 text-[10px] font-medium text-slate-600 dark:text-slate-300 max-w-full">
+                        <DeviceTypeBadge deviceType={peer.device_type} t={t} />
+                        <span className="truncate">{peer.display_name || t('unknown')}</span>
                       </span>
                     </button>
                   );
@@ -1524,8 +1595,14 @@ export default function ChatWorkspace({
 
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                          {title}
+                        <span className="text-xs font-bold text-slate-900 dark:text-white truncate flex items-center gap-1 min-w-0">
+                          <span className="truncate">{title}</span>
+                          {conv.type === 'dm' && (
+                            <DeviceTypeBadge
+                              deviceType={livePeer?.device_type || conv.peer?.device_type}
+                              t={t}
+                            />
+                          )}
                         </span>
                         <span className="text-[10px] text-slate-400 shrink-0">
                           {formatMessageTime(
@@ -1625,8 +1702,11 @@ export default function ChatWorkspace({
                   </div>
 
                   <div className="min-w-0">
-                    <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
-                      {getConversationTitle(activeConversation, t)}
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
+                      <span className="truncate">{getConversationTitle(activeConversation, t)}</span>
+                      {activeConversation.type === 'dm' && (
+                        <DeviceTypeBadge deviceType={activePeer?.device_type} t={t} />
+                      )}
                     </h3>
                     <div className="text-[11px] truncate">
                       {activeTypingUsers.length > 0 ? (
@@ -1712,7 +1792,12 @@ export default function ChatWorkspace({
               )}
 
               {/* Messages Feed */}
-              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+              <div
+                onScroll={() => {
+                  if (msgMenu) setMsgMenu(null);
+                }}
+                className="flex-1 overflow-y-auto px-4 py-4"
+              >
                 {loadingMsgs && messages.length === 0 ? (
                   <div className="h-full flex items-center justify-center text-slate-400 gap-2">
                     <RefreshCw className="w-5 h-5 animate-spin text-indigo-500" strokeWidth={1.5} />
@@ -1723,9 +1808,14 @@ export default function ChatWorkspace({
                     {debouncedMsgSearch ? t('noResults') : t('chatDropFilesHint')}
                   </div>
                 ) : (
-                  messages.map((msg) => {
+                  messages.map((msg, idx) => {
                     const isMine = msg.sender_uuid === identity?.uuid;
                     const isDeleted = Boolean(msg.deleted_at);
+                    const isFirstInGroup =
+                      idx === 0 || messages[idx - 1].sender_uuid !== msg.sender_uuid;
+                    const isLastInGroup =
+                      idx === messages.length - 1 ||
+                      messages[idx + 1].sender_uuid !== msg.sender_uuid;
                     const att = parseAttachment(msg);
                     const isVoice = msg.type === 'voice' && att;
                     const isVaultLink =
@@ -1760,19 +1850,49 @@ export default function ChatWorkspace({
                       <div
                         key={msg.id}
                         id={`wm-msg-${msg.id}`}
-                        className={`group flex flex-col ${
+                        className={`flex flex-col ${
                           isMine ? 'items-end' : 'items-start'
-                        }`}
+                        } ${isLastInGroup ? 'mb-3.5' : 'mb-1'}`}
                       >
                         <div
-                          className={`relative max-w-[85%] sm:max-w-[74%] rounded-2xl px-3.5 py-2.5 shadow-sm transition-all ${
+                          onContextMenu={(e) => {
+                            if (isDeleted) return;
+                            e.preventDefault();
+                            openMessageMenu(e, msg);
+                          }}
+                          className={`group relative w-fit max-w-[68%] h-auto px-3 pt-2 pb-1.5 shadow-sm transition-all ${
+                            isFirstInGroup
+                              ? isMine
+                                ? 'rounded-2xl rounded-se-none ts-bubble-tail-me'
+                                : 'rounded-2xl rounded-ss-none ts-bubble-tail-other'
+                              : 'rounded-2xl'
+                          } ${
                             isMine
-                              ? 'bg-indigo-600 text-white rounded-ee-md'
-                              : 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800 rounded-es-md'
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-slate-800'
                           } ${isHighlighted ? 'ring-2 ring-amber-400 scale-[1.01]' : ''}`}
                         >
-                          {/* Group sender name */}
-                          {!isMine && activeConversation.type === 'group' && (
+                          {/* Hover Chevron Dropdown Trigger */}
+                          {!isDeleted && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openMessageMenu(e, msg);
+                              }}
+                              aria-label={t('open')}
+                              className={`absolute top-1 end-1 z-10 p-0.5 rounded-full opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ${
+                                isMine
+                                  ? 'bg-indigo-700/90 hover:bg-indigo-800 text-white'
+                                  : 'bg-white/95 dark:bg-slate-800/95 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-300 shadow-xs'
+                              }`}
+                            >
+                              <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} />
+                            </button>
+                          )}
+
+                          {/* Group sender name ONLY on first message in group */}
+                          {!isMine && activeConversation.type === 'group' && isFirstInGroup && (
                             <div className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 mb-1">
                               {msg.sender_name || t('unknown')}
                             </div>
@@ -2034,12 +2154,12 @@ export default function ChatWorkspace({
                             </div>
                           )}
 
-                          {/* Footer: Timestamp, Edited label, Receipt Checkmarks */}
+                          {/* Footer: Compact Timestamp, Edited label, Receipt Checkmarks */}
                           <div
-                            className={`flex items-center justify-end gap-1.5 mt-1 text-[10px] ${
+                            className={`flex justify-end items-center gap-1 mt-0.5 text-[10px] leading-none opacity-75 select-none ${
                               isMine
-                                ? 'text-indigo-100/90'
-                                : 'text-slate-400 dark:text-slate-500'
+                                ? 'text-indigo-100'
+                                : 'text-slate-500 dark:text-slate-400'
                             }`}
                           >
                             {msg.edited_at && !isDeleted && (
@@ -2058,122 +2178,23 @@ export default function ChatWorkspace({
                               >
                                 {msg.receiptStatus === 'read' ? (
                                   <CheckCheck
-                                    className="w-3.5 h-3.5 text-[#3b82f6] bg-white rounded-full p-[1px]"
-                                    strokeWidth={1.5}
+                                    className="w-3.5 h-3.5 text-[#38bdf8]"
+                                    strokeWidth={2}
                                   />
                                 ) : msg.receiptStatus === 'delivered' ? (
                                   <CheckCheck
-                                    className="w-3.5 h-3.5 text-slate-300"
-                                    strokeWidth={1.5}
+                                    className="w-3.5 h-3.5 text-indigo-100"
+                                    strokeWidth={1.75}
                                   />
                                 ) : (
                                   <Check
-                                    className="w-3.5 h-3.5 text-slate-300"
-                                    strokeWidth={1.5}
+                                    className="w-3.5 h-3.5 text-indigo-100"
+                                    strokeWidth={1.75}
                                   />
                                 )}
                               </span>
                             )}
                           </div>
-
-                          {/* Hover Action Toolbar (for ALL non-deleted message types) */}
-                          {!isDeleted && (
-                            <div
-                              className={`opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity flex items-center gap-0.5 mt-1.5 pt-1 border-t ${
-                                isMine
-                                  ? 'border-white/15'
-                                  : 'border-slate-100 dark:border-slate-800'
-                              }`}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setReplyTo(msg);
-                                  setReactionTargetId(null);
-                                }}
-                                title={t('chatReply')}
-                                className={`p-1 rounded-md transition ${
-                                  isMine
-                                    ? 'hover:bg-white/20 text-white'
-                                    : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400'
-                                }`}
-                              >
-                                <Reply className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setReactionTargetId((cur) =>
-                                    cur === msg.id ? null : msg.id
-                                  )
-                                }
-                                title={t('chatReact')}
-                                className={`p-1 rounded-md transition ${
-                                  isMine
-                                    ? 'hover:bg-white/20 text-white'
-                                    : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400'
-                                }`}
-                              >
-                                <Smile className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => setForwardMsg(msg)}
-                                title={t('chatForward')}
-                                className={`p-1 rounded-md transition ${
-                                  isMine
-                                    ? 'hover:bg-white/20 text-white'
-                                    : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400'
-                                }`}
-                              >
-                                <Forward className="w-3.5 h-3.5" strokeWidth={1.5} />
-                              </button>
-
-                              {isMine && msg.type === 'text' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleStartEdit(msg)}
-                                  title={t('chatEdit')}
-                                  className="p-1 rounded-md hover:bg-white/20 text-white transition"
-                                >
-                                  <Edit3 className="w-3.5 h-3.5" strokeWidth={1.5} />
-                                </button>
-                              )}
-
-                              {isMine && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteMessage(msg)}
-                                  title={t('chatDelete')}
-                                  className="p-1 rounded-md hover:bg-rose-500/80 text-white transition"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" strokeWidth={1.5} />
-                                </button>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Reaction Picker Popover */}
-                          {reactionTargetId === msg.id && (
-                            <div
-                              className={`absolute -top-10 ${
-                                isMine ? 'end-0' : 'start-0'
-                              } z-20 flex items-center gap-1 px-2 py-1 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-xl`}
-                            >
-                              {REACTION_EMOJIS.map((emoji) => (
-                                <button
-                                  key={emoji}
-                                  type="button"
-                                  onClick={() => handleToggleReaction(msg.id, emoji)}
-                                  className="w-7 h-7 rounded-full hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center justify-center text-sm transition hover:scale-110"
-                                >
-                                  {emoji}
-                                </button>
-                              ))}
-                            </div>
-                          )}
                         </div>
 
                         {/* Rendered Reactions Pills */}
@@ -2284,6 +2305,7 @@ export default function ChatWorkspace({
                     </button>
 
                     <textarea
+                      ref={composerInputRef}
                       rows={1}
                       value={composerText}
                       onChange={(e) => handleComposerChange(e.target.value)}
@@ -2413,8 +2435,9 @@ export default function ChatWorkspace({
                           avatarData={peer.avatar_data}
                           size="sm"
                         />
-                        <span className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate flex-1">
-                          {peer.display_name || t('unknown')}
+                        <span className="text-xs font-medium text-slate-800 dark:text-slate-200 truncate flex-1 flex items-center gap-1.5 min-w-0">
+                          <span className="truncate">{peer.display_name || t('unknown')}</span>
+                          <DeviceTypeBadge deviceType={peer.device_type} t={t} />
                         </span>
                       </label>
                     );
@@ -2461,31 +2484,40 @@ export default function ChatWorkspace({
             </div>
 
             <div className="max-h-64 overflow-y-auto space-y-1.5">
-              {conversations.map((conv) => (
-                <button
-                  key={conv.id}
-                  type="button"
-                  disabled={forwarding}
-                  onClick={() => handleForwardToConversation(conv.id)}
-                  className="w-full flex items-center gap-3 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-500/15 transition text-start"
-                >
-                  {conv.type === 'group' ? (
-                    <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
-                      <Users className="w-4 h-4" strokeWidth={1.5} />
-                    </div>
-                  ) : (
-                    <UserAvatar
-                      name={getConversationTitle(conv, t)}
-                      avatarData={conv.avatar_data}
-                      size="sm"
-                    />
-                  )}
-                  <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex-1">
-                    {getConversationTitle(conv, t)}
-                  </span>
-                  <Send className="w-3.5 h-3.5 text-indigo-500 shrink-0" strokeWidth={1.5} />
-                </button>
-              ))}
+              {conversations.map((conv) => {
+                const dmPeer =
+                  conv.type === 'dm' && conv.peer
+                    ? peers.find((p) => p.uuid === conv.peer.uuid) || conv.peer
+                    : null;
+                return (
+                  <button
+                    key={conv.id}
+                    type="button"
+                    disabled={forwarding}
+                    onClick={() => handleForwardToConversation(conv.id)}
+                    className="w-full flex items-center gap-3 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-500/15 transition text-start"
+                  >
+                    {conv.type === 'group' ? (
+                      <div className="w-9 h-9 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                        <Users className="w-4 h-4" strokeWidth={1.5} />
+                      </div>
+                    ) : (
+                      <UserAvatar
+                        name={getConversationTitle(conv, t)}
+                        avatarData={conv.avatar_data}
+                        size="sm"
+                      />
+                    )}
+                    <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex-1 flex items-center gap-1.5 min-w-0">
+                      <span className="truncate">{getConversationTitle(conv, t)}</span>
+                      {conv.type === 'dm' && (
+                        <DeviceTypeBadge deviceType={dmPeer?.device_type} t={t} />
+                      )}
+                    </span>
+                    <Send className="w-3.5 h-3.5 text-indigo-500 shrink-0" strokeWidth={1.5} />
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -2984,6 +3016,103 @@ export default function ChatWorkspace({
           </div>
         </div>
       )}
+
+      {/* FLOATING CONTEXT DROPDOWN MENU (Hover Chevron or Right-Click) */}
+      {msgMenu?.msg && !msgMenu.msg.deleted_at && (() => {
+        const menuMsg = msgMenu.msg;
+        const isMenuMine = menuMsg.sender_uuid === identity?.uuid;
+        return (
+          <div
+            ref={msgMenuRef}
+            role="menu"
+            style={{ left: `${msgMenu.x}px`, top: `${msgMenu.y}px` }}
+            onClick={(e) => e.stopPropagation()}
+            className="fixed z-50 w-56 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-2xl p-1.5 wm-animate-in"
+          >
+            {/* Quick Emoji Reaction Bar */}
+            <div className="flex items-center justify-between gap-0.5 px-1 py-1">
+              {REACTION_EMOJIS.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => handleToggleReaction(menuMsg.id, emoji)}
+                  className="w-8 h-8 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center text-base transition hover:scale-110"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+
+            <div className="my-1 border-t border-slate-200/80 dark:border-slate-800" />
+
+            {/* Reply */}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setReplyTo(menuMsg);
+                setMsgMenu(null);
+                requestAnimationFrame(() => composerInputRef.current?.focus());
+              }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-start"
+            >
+              <Reply className="w-3.5 h-3.5 text-indigo-500 shrink-0" strokeWidth={1.75} />
+              <span>{t('chatReply')}</span>
+            </button>
+
+            {/* Forward */}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setForwardMsg(menuMsg);
+                setMsgMenu(null);
+              }}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-start"
+            >
+              <Forward className="w-3.5 h-3.5 text-emerald-500 shrink-0" strokeWidth={1.75} />
+              <span>{t('chatForward')}</span>
+            </button>
+
+            {/* Copy */}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => handleCopyMessageText(menuMsg)}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-start"
+            >
+              <Copy className="w-3.5 h-3.5 text-sky-500 shrink-0" strokeWidth={1.75} />
+              <span>{t('chatCopyText')}</span>
+            </button>
+
+            {/* Edit (Own Text Only) */}
+            {isMenuMine && menuMsg.type === 'text' && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => handleStartEdit(menuMsg)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition text-start"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-amber-500 shrink-0" strokeWidth={1.75} />
+                <span>{t('chatEdit')}</span>
+              </button>
+            )}
+
+            {/* Delete (Own Only) */}
+            {isMenuMine && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => handleDeleteMessage(menuMsg)}
+                className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/15 transition text-start"
+              >
+                <Trash2 className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
+                <span>{t('chatDelete')}</span>
+              </button>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

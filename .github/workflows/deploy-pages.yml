@@ -1,4 +1,4 @@
-name: Deploy WorkMesh GitHub Pages
+name: Deploy TwinSync Pro GitHub Pages
 
 on:
   push:

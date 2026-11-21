@@ -133,9 +133,10 @@ export default function App() {
   }, []);
 
   const refreshBootstrap = useCallback(async () => {
-    if (!window.workmesh?.getBootstrap) return null;
+    const api = window.twinsync || window.workmesh;
+    if (!api?.getBootstrap) return null;
     try {
-      const data = await window.workmesh.getBootstrap();
+      const data = await api.getBootstrap();
       applyBootstrap(data, false);
       return data;
     } catch (err) {
@@ -148,12 +149,13 @@ export default function App() {
   useEffect(() => {
     let active = true;
     async function init() {
-      if (!window.workmesh?.getBootstrap) {
+      const api = window.twinsync || window.workmesh;
+      if (!api?.getBootstrap) {
         setLoading(false);
         return;
       }
       try {
-        const data = await window.workmesh.getBootstrap();
+        const data = await api.getBootstrap();
         if (active) {
           applyBootstrap(data, true);
         }
@@ -175,29 +177,30 @@ export default function App() {
 
   // Real-time IPC event subscriptions
   useEffect(() => {
-    if (!window.workmesh?.onEvent) return undefined;
+    const api = window.twinsync || window.workmesh;
+    if (!api?.onEvent) return undefined;
 
     const unsubs = [];
 
     unsubs.push(
-      window.workmesh.onEvent('chat:message', () => {
+      api.onEvent('chat:message', () => {
         refreshBootstrap();
       })
     );
 
     unsubs.push(
-      window.workmesh.onEvent('conversations:changed', () => {
+      api.onEvent('conversations:changed', () => {
         refreshBootstrap();
       })
     );
 
     unsubs.push(
-      window.workmesh.onEvent('peers:changed', async (payload) => {
+      api.onEvent('peers:changed', async (payload) => {
         if (Array.isArray(payload)) {
           setPeers(payload);
-        } else if (window.workmesh?.getPeers) {
+        } else if (api?.getPeers) {
           try {
-            const list = await window.workmesh.getPeers();
+            const list = await api.getPeers();
             if (Array.isArray(list)) {
               setPeers(list);
               return;
@@ -213,7 +216,7 @@ export default function App() {
     );
 
     unsubs.push(
-      window.workmesh.onEvent('vault:changed', () => {
+      api.onEvent('vault:changed', () => {
         refreshBootstrap();
       })
     );
@@ -243,19 +246,19 @@ export default function App() {
     };
 
     unsubs.push(
-      window.workmesh.onEvent('vault:remote-updated', (payload) => {
+      api.onEvent('vault:remote-updated', (payload) => {
         handleRemoteUpdated(payload, 'info');
       })
     );
 
     unsubs.push(
-      window.workmesh.onEvent('sandbox:remote-updated', (payload) => {
+      api.onEvent('sandbox:remote-updated', (payload) => {
         handleRemoteUpdated(payload, 'warning');
       })
     );
 
     unsubs.push(
-      window.workmesh.onEvent('sandbox:sessions-changed', (payload) => {
+      api.onEvent('sandbox:sessions-changed', (payload) => {
         if (Array.isArray(payload)) {
           setOpenSessions(payload);
         } else {
@@ -265,7 +268,7 @@ export default function App() {
     );
 
     unsubs.push(
-      window.workmesh.onEvent('presence:changed', (payload) => {
+      api.onEvent('presence:changed', (payload) => {
         if (payload?.presenceMap && typeof payload.presenceMap === 'object') {
           setPresenceMap(payload.presenceMap);
         } else if (
@@ -283,13 +286,13 @@ export default function App() {
     );
 
     unsubs.push(
-      window.workmesh.onEvent('trash:changed', () => {
+      api.onEvent('trash:changed', () => {
         setTrashRefreshKey((k) => k + 1);
       })
     );
 
     unsubs.push(
-      window.workmesh.onEvent('sandbox:conflict-saved', (payload) => {
+      api.onEvent('sandbox:conflict-saved', (payload) => {
         const conflictName =
           payload?.conflictName ||
           payload?.fileName ||
@@ -307,7 +310,7 @@ export default function App() {
     );
 
     unsubs.push(
-      window.workmesh.onEvent('ui:open-chat', (payload) => {
+      api.onEvent('ui:open-chat', (payload) => {
         const chatId =
           typeof payload === 'string'
             ? payload
@@ -320,13 +323,13 @@ export default function App() {
     );
 
     unsubs.push(
-      window.workmesh.onEvent('ui:open-mobile-link', () => {
+      api.onEvent('ui:open-mobile-link', () => {
         setViewMode('mobile');
       })
     );
 
     unsubs.push(
-      window.workmesh.onEvent('ui:play-sound', () => {
+      api.onEvent('ui:play-sound', () => {
         triggerSoundIfAllowed();
       })
     );
@@ -343,7 +346,8 @@ export default function App() {
   const handleChangeTheme = useCallback(async (nextTheme) => {
     setTheme(nextTheme);
     try {
-      await window.workmesh?.setSetting?.('theme', nextTheme);
+      const api = window.twinsync || window.workmesh;
+      await api?.setSetting?.('theme', nextTheme);
     } catch {
       // ignore persistence error
     }
@@ -352,7 +356,8 @@ export default function App() {
   const handleChangeLang = useCallback(async (nextLang) => {
     setLang(nextLang);
     try {
-      await window.workmesh?.setSetting?.('lang', nextLang);
+      const api = window.twinsync || window.workmesh;
+      await api?.setSetting?.('lang', nextLang);
     } catch {
       // ignore persistence error
     }
@@ -361,7 +366,8 @@ export default function App() {
   const handleChangeSoundMuted = useCallback(async (nextMuted) => {
     setSoundMuted(Boolean(nextMuted));
     try {
-      await window.workmesh?.setSetting?.('sound_muted', Boolean(nextMuted));
+      const api = window.twinsync || window.workmesh;
+      await api?.setSetting?.('sound_muted', Boolean(nextMuted));
     } catch {
       // ignore persistence error
     }
@@ -394,7 +400,8 @@ export default function App() {
 
   const handleCompleteOnboarding = useCallback(
     async (payload) => {
-      const res = await window.workmesh.completeOnboarding(payload);
+      const api = window.twinsync || window.workmesh;
+      const res = await api.completeOnboarding(payload);
       if (res && res.ok === false) {
         throw new Error(res.error || t('error'));
       }

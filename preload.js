@@ -25,12 +25,13 @@ const ALLOWED_EVENTS = new Set([
   'ui:play-sound'
 ]);
 
-contextBridge.exposeInMainWorld('workmesh', {
+const api = {
   // Identity, Settings, Audit & Peers
   getBootstrap: () => ipcRenderer.invoke('app:getBootstrap'),
   completeOnboarding: (payload) => ipcRenderer.invoke('app:completeOnboarding', payload),
   updateProfile: (payload) => ipcRenderer.invoke('app:updateProfile', payload),
   updateSecurityQA: (payload) => ipcRenderer.invoke('app:updateSecurityQA', payload),
+  updateAccountPin: (pin) => ipcRenderer.invoke('app:updateAccountPin', pin),
   setSetting: (key, value) => ipcRenderer.invoke('app:setSetting', key, value),
   getAuditLogs: (filter) => ipcRenderer.invoke('app:getAuditLogs', filter),
   getPeers: () => ipcRenderer.invoke('app:getPeers'),
@@ -102,4 +103,7 @@ contextBridge.exposeInMainWorld('workmesh', {
       ipcRenderer.removeListener(eventName, listener);
     };
   }
-});
+};
+
+contextBridge.exposeInMainWorld('twinsync', api);
+contextBridge.exposeInMainWorld('workmesh', api);

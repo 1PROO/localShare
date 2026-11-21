@@ -5,6 +5,7 @@ const path = require('path');
 const zlib = require('zlib');
 
 const ASSETS_DIR = path.resolve(__dirname, '..', 'assets');
+const DOCS_DIR = path.resolve(__dirname, '..', 'docs');
 
 // Standard PNG CRC-32 lookup table
 const CRC_TABLE = new Uint32Array(256);
@@ -177,90 +178,115 @@ function blendOver(dstR, dstG, dstB, dstA, srcR, srcG, srcB, srcA) {
   ];
 }
 
-function sampleWorkMeshIcon(u, v, pxScale) {
-  const aa = 0.75 * pxScale;
+function wrapPi(a) {
+  let x = (a + Math.PI) % (2 * Math.PI);
+  if (x < 0) x += 2 * Math.PI;
+  return x - Math.PI;
+}
 
-  // Rounded squircle outer frame
-  const bgDist = sdRoundedBox(u, v, 0.5, 0.5, 0.44, 0.44, 0.14);
+function sdArc(px, py, cx, cy, r, startAngle, sweepAngle) {
+  const dx = px - cx;
+  const dy = py - cy;
+  const distR = Math.hypot(dx, dy);
+  const midAngle = startAngle + sweepAngle * 0.5;
+  const halfSweep = Math.abs(sweepAngle) * 0.5;
+  const angle = Math.atan2(dy, dx);
+  const dAng = wrapPi(angle - midAngle);
+  if (Math.abs(dAng) <= halfSweep) {
+    return Math.abs(distR - r);
+  }
+  const endAngle = startAngle + sweepAngle;
+  const sx = cx + r * Math.cos(startAngle);
+  const sy = cy + r * Math.sin(startAngle);
+  const ex = cx + r * Math.cos(endAngle);
+  const ey = cy + r * Math.sin(endAngle);
+  return Math.min(Math.hypot(px - sx, py - sy), Math.hypot(px - ex, py - ey));
+}
+
+function sampleTwinSyncIcon(u, v, pxScale) {
+  const aa = 0.75 * pxScale;
+  const S = 1 / 256;
+
+  // Rounded squircle outer frame: x=12, y=12, width=232, height=232, rx=56
+  const bgDist = sdRoundedBox(u, v, 0.5, 0.5, 116 * S, 116 * S, 56 * S);
   const bgAlpha = 1 - smoothstep(-aa, aa, bgDist);
   if (bgAlpha <= 0.001) return [0, 0, 0, 0];
 
-  // Diagonal indigo (#4F46E5) -> blue (#3B82F6) -> emerald (#10B981) gradient
-  const gradT = clamp01((u * 0.65 + v * 0.75) / 1.25);
+  // Diagonal indigo (#4F46E5) -> sky (#0EA5E9) -> emerald (#10B981) gradient
+  const gradT = clamp01(((u - 12 * S) + (v - 12 * S)) / (464 * S));
   let r, g, b;
   if (gradT < 0.5) {
     const t = gradT * 2;
-    r = lerp(79, 59, t);
-    g = lerp(70, 130, t);
-    b = lerp(229, 246, t);
+    r = lerp(79, 14, t);
+    g = lerp(70, 165, t);
+    b = lerp(229, 233, t);
   } else {
     const t = (gradT - 0.5) * 2;
-    r = lerp(59, 16, t);
-    g = lerp(130, 185, t);
-    b = lerp(246, 129, t);
+    r = lerp(14, 16, t);
+    g = lerp(165, 185, t);
+    b = lerp(233, 129, t);
   }
 
-  // Subtle top-left glass glow inside squircle
-  const glowDist = Math.hypot(u - 0.28, v - 0.22);
-  const glow = Math.max(0, 1 - glowDist / 0.65) * 0.16;
-  r = lerp(r, 255, glow);
-  g = lerp(g, 255, glow);
-  b = lerp(b, 255, glow);
-
-  // Subtle inner rim highlight
-  const rimDist = Math.abs(bgDist + 0.014);
-  const rimAlpha = (1 - smoothstep(0, 0.016 + aa, rimDist)) * 0.22;
+  // Subtle top-left glass sheen inside squircle (cx=24%, cy=18%, r=65%)
+  const sheenCx = (12 + 0.24 * 232) * S;
+  const sheenCy = (12 + 0.18 * 232) * S;
+  const sheenR = 0.65 * 232 * S;
+  const sheen = clamp01(1 - Math.hypot(u - sheenCx, v - sheenCy) / sheenR) * 0.24;
   let a = bgAlpha;
-  [r, g, b, a] = blendOver(r, g, b, a, 255, 255, 255, rimAlpha * bgAlpha);
+  [r, g, b, a] = blendOver(r, g, b, a, 255, 255, 255, sheen * bgAlpha);
 
-  // Mesh connections between hub (0.50, 0.54) and 3 peer nodes
-  const topX = 0.50, topY = 0.225;
-  const leftX = 0.235, leftY = 0.735;
-  const rightX = 0.765, rightY = 0.735;
-  const hubX = 0.50, hubY = 0.545;
+  // Subtle white inner stroke (stroke-opacity="0.22", stroke-width="3")
+  const rimDist = Math.abs(bgDist + 1.5 * S) - 1.5 * S;
+  const rimAlpha = (1 - smoothstep(-aa, aa, rimDist)) * 0.22 * bgAlpha;
+  [r, g, b, a] = blendOver(r, g, b, a, 255, 255, 255, rimAlpha);
 
-  const lineWidth = 0.024;
-  const dL1 = sdSegment(u, v, topX, topY, hubX, hubY) - lineWidth;
-  const dL2 = sdSegment(u, v, leftX, leftY, hubX, hubY) - lineWidth;
-  const dL3 = sdSegment(u, v, rightX, rightY, hubX, hubY) - lineWidth;
-  const dL4 = sdSegment(u, v, leftX, leftY, rightX, rightY) - lineWidth * 0.7;
-  const meshLineDist = Math.min(dL1, dL2, dL3, dL4);
-  const meshLineAlpha = (1 - smoothstep(-aa, aa, meshLineDist)) * 0.85 * bgAlpha;
-  [r, g, b, a] = blendOver(r, g, b, a, 224, 242, 254, meshLineAlpha);
-
-  // Central rounded workspace folder-chat hub
-  const folderBody = sdRoundedBox(u, v, 0.50, 0.555, 0.17, 0.125, 0.042);
-  const folderTab = sdRoundedBox(u, v, 0.415, 0.435, 0.085, 0.042, 0.025);
-  const folderDist = Math.min(folderBody, folderTab);
-  const folderAlpha = (1 - smoothstep(-aa, aa, folderDist)) * bgAlpha;
-  [r, g, b, a] = blendOver(r, g, b, a, 255, 255, 255, folderAlpha);
-
-  // Chat/sync bars inside the white folder hub
-  const bar1 = sdRoundedBox(u, v, 0.485, 0.535, 0.085, 0.015, 0.012);
-  const bar2 = sdRoundedBox(u, v, 0.460, 0.590, 0.060, 0.015, 0.012);
-  const barDist = Math.min(bar1, bar2);
-  const barAlpha = (1 - smoothstep(-aa, aa, barDist)) * folderAlpha;
-  [r, g, b, a] = blendOver(r, g, b, a, 79, 70, 229, barAlpha);
-
-  // Emerald pulse dot inside folder hub
-  const pulseDist = Math.hypot(u - 0.59, v - 0.59) - 0.024;
-  const pulseAlpha = (1 - smoothstep(-aa, aa, pulseDist)) * folderAlpha;
-  [r, g, b, a] = blendOver(r, g, b, a, 16, 185, 129, pulseAlpha);
-
-  // Three outer peer nodes (white halo + emerald/indigo core)
-  const nodes = [
-    [topX, topY, 16, 185, 129],
-    [leftX, leftY, 79, 70, 229],
-    [rightX, rightY, 16, 185, 129]
-  ];
-  for (let i = 0; i < nodes.length; i++) {
-    const [nx, ny, cr, cg, cb] = nodes[i];
-    const dist = Math.hypot(u - nx, v - ny);
-    const outerAlpha = (1 - smoothstep(-aa, aa, dist - 0.072)) * bgAlpha;
-    [r, g, b, a] = blendOver(r, g, b, a, 255, 255, 255, outerAlpha);
-    const innerAlpha = (1 - smoothstep(-aa, aa, dist - 0.038)) * bgAlpha;
-    [r, g, b, a] = blendOver(r, g, b, a, cr, cg, cb, innerAlpha);
+  // Symmetric glowing halos behind the twin nodes
+  const leftNodeX = 100 * S, nodeY = 128 * S;
+  const rightNodeX = 156 * S;
+  const glowRadius = 26 * S;
+  const nodeXs = [leftNodeX, rightNodeX];
+  for (let i = 0; i < nodeXs.length; i++) {
+    const tGlow = clamp01(Math.hypot(u - nodeXs[i], v - nodeY) / glowRadius);
+    if (tGlow < 1) {
+      const glowA = tGlow < 0.55
+        ? lerp(0.45, 0.16, tGlow / 0.55)
+        : lerp(0.16, 0.0, (tGlow - 0.55) / 0.45);
+      [r, g, b, a] = blendOver(r, g, b, a, 224, 242, 254, glowA * bgAlpha);
+    }
   }
+
+  // Mirrored interlocking smooth sync arcs with rounded chevron arrowheads
+  const arcRadius = 68 * S;
+  const halfStroke = 8 * S;
+  const sweep = (150 * Math.PI) / 180;
+
+  // Upper sync arc (#FFFFFF): 195 deg -> 345 deg + chevron
+  const upperArcDist = sdArc(u, v, 0.5, 0.5, arcRadius, (195 * Math.PI) / 180, sweep);
+  const upperTipX = 193.68 * S, upperTipY = 110.40 * S;
+  const upperChev1 = sdSegment(u, v, upperTipX, upperTipY, 200.52 * S, 90.54 * S);
+  const upperChev2 = sdSegment(u, v, upperTipX, upperTipY, 175.31 * S, 100.22 * S);
+  const upperDist = Math.min(upperArcDist, upperChev1, upperChev2) - halfStroke;
+  const upperAlpha = (1 - smoothstep(-aa, aa, upperDist)) * bgAlpha;
+  [r, g, b, a] = blendOver(r, g, b, a, 255, 255, 255, upperAlpha);
+
+  // Lower sync arc (#E0F2FE): 15 deg -> 165 deg + chevron
+  const lowerArcDist = sdArc(u, v, 0.5, 0.5, arcRadius, (15 * Math.PI) / 180, sweep);
+  const lowerTipX = 62.32 * S, lowerTipY = 145.60 * S;
+  const lowerChev1 = sdSegment(u, v, lowerTipX, lowerTipY, 55.48 * S, 165.46 * S);
+  const lowerChev2 = sdSegment(u, v, lowerTipX, lowerTipY, 80.69 * S, 155.78 * S);
+  const lowerDist = Math.min(lowerArcDist, lowerChev1, lowerChev2) - halfStroke;
+  const lowerAlpha = (1 - smoothstep(-aa, aa, lowerDist)) * bgAlpha;
+  [r, g, b, a] = blendOver(r, g, b, a, 224, 242, 254, lowerAlpha);
+
+  // Crisp twin node cores
+  const coreRadius = 12.5 * S;
+  const leftCoreDist = Math.hypot(u - leftNodeX, v - nodeY) - coreRadius;
+  const leftCoreAlpha = (1 - smoothstep(-aa, aa, leftCoreDist)) * bgAlpha;
+  [r, g, b, a] = blendOver(r, g, b, a, 255, 255, 255, leftCoreAlpha);
+
+  const rightCoreDist = Math.hypot(u - rightNodeX, v - nodeY) - coreRadius;
+  const rightCoreAlpha = (1 - smoothstep(-aa, aa, rightCoreDist)) * bgAlpha;
+  [r, g, b, a] = blendOver(r, g, b, a, 224, 242, 254, rightCoreAlpha);
 
   return [r, g, b, a];
 }
@@ -283,7 +309,7 @@ function renderIconRgba(size) {
         const v = (y + (sy + 0.5) * invSub) * pxScale;
         for (let sx = 0; sx < subSamples; sx++) {
           const u = (x + (sx + 0.5) * invSub) * pxScale;
-          const [sr, sg, sb, sa] = sampleWorkMeshIcon(u, v, pxScale);
+          const [sr, sg, sb, sa] = sampleTwinSyncIcon(u, v, pxScale);
           accR += sr * sa;
           accG += sg * sa;
           accB += sb * sa;
@@ -313,56 +339,55 @@ function renderIconRgba(size) {
 function generateSvg() {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
-    <linearGradient id="wm-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <linearGradient id="ts-bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#4F46E5" />
-      <stop offset="50%" stop-color="#3B82F6" />
+      <stop offset="50%" stop-color="#0EA5E9" />
       <stop offset="100%" stop-color="#10B981" />
     </linearGradient>
-    <linearGradient id="wm-shine" x1="0%" y1="0%" x2="80%" y2="80%">
+    <radialGradient id="ts-sheen" cx="24%" cy="18%" r="65%">
       <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.24" />
       <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
-    </linearGradient>
+    </radialGradient>
+    <radialGradient id="ts-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#E0F2FE" stop-opacity="0.45" />
+      <stop offset="55%" stop-color="#E0F2FE" stop-opacity="0.16" />
+      <stop offset="100%" stop-color="#E0F2FE" stop-opacity="0" />
+    </radialGradient>
   </defs>
 
-  <!-- Squircle background -->
-  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#wm-bg)" />
-  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#wm-shine)" />
-  <rect x="19" y="19" width="218" height="218" rx="45" fill="none" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="3" />
+  <!-- Rounded squircle background -->
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-bg)" />
+  <rect x="12" y="12" width="232" height="232" rx="56" fill="url(#ts-sheen)" />
+  <rect x="13.5" y="13.5" width="229" height="229" rx="54.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="3" />
 
-  <!-- Mesh network links -->
-  <g stroke="#E0F2FE" stroke-opacity="0.88" stroke-width="11" stroke-linecap="round">
-    <line x1="128" y1="58" x2="128" y2="140" />
-    <line x1="60" y1="188" x2="128" y2="140" />
-    <line x1="196" y1="188" x2="128" y2="140" />
-    <line x1="60" y1="188" x2="196" y2="188" stroke-width="8" stroke-opacity="0.65" />
+  <!-- Symmetric glowing twin nodes -->
+  <circle cx="100" cy="128" r="26" fill="url(#ts-glow)" />
+  <circle cx="156" cy="128" r="26" fill="url(#ts-glow)" />
+
+  <!-- Mirrored interlocking smooth sync arcs with rounded chevron arrowheads -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="16">
+    <path d="M 62.32 110.40 A 68 68 0 0 1 193.68 110.40" stroke="#FFFFFF" />
+    <path d="M 200.52 90.54 L 193.68 110.40 L 175.31 100.22" stroke="#FFFFFF" />
+    <path d="M 193.68 145.60 A 68 68 0 0 1 62.32 145.60" stroke="#E0F2FE" />
+    <path d="M 55.48 165.46 L 62.32 145.60 L 80.69 155.78" stroke="#E0F2FE" />
   </g>
 
-  <!-- Central workspace folder + chat hub -->
-  <path d="M84 114 C84 106 90 100 98 100 L122 100 C127 100 131 103 134 107 L138 111 L158 111 C166 111 172 117 172 125 L172 162 C172 170 166 176 158 176 L98 176 C90 176 84 170 84 162 Z" fill="#FFFFFF" />
-  <rect x="102" y="132" width="44" height="8" rx="4" fill="#4F46E5" />
-  <rect x="102" y="146" width="30" height="8" rx="4" fill="#4F46E5" />
-  <circle cx="150" cy="150" r="6" fill="#10B981" />
-
-  <!-- Peer nodes -->
-  <g>
-    <circle cx="128" cy="58" r="18" fill="#FFFFFF" />
-    <circle cx="128" cy="58" r="9.5" fill="#10B981" />
-
-    <circle cx="60" cy="188" r="18" fill="#FFFFFF" />
-    <circle cx="60" cy="188" r="9.5" fill="#4F46E5" />
-
-    <circle cx="196" cy="188" r="18" fill="#FFFFFF" />
-    <circle cx="196" cy="188" r="9.5" fill="#10B981" />
-  </g>
+  <!-- Crisp twin node cores -->
+  <circle cx="100" cy="128" r="12.5" fill="#FFFFFF" />
+  <circle cx="156" cy="128" r="12.5" fill="#E0F2FE" />
 </svg>
 `;
 }
 
 function main() {
   fs.mkdirSync(ASSETS_DIR, { recursive: true });
+  fs.mkdirSync(DOCS_DIR, { recursive: true });
 
+  const svgMarkup = generateSvg();
   const svgPath = path.join(ASSETS_DIR, 'icon.svg');
-  fs.writeFileSync(svgPath, generateSvg(), 'utf8');
+  const docsSvgPath = path.join(DOCS_DIR, 'icon.svg');
+  fs.writeFileSync(svgPath, svgMarkup, 'utf8');
+  fs.writeFileSync(docsSvgPath, svgMarkup, 'utf8');
 
   const rgba16 = renderIconRgba(16);
   const rgba32 = renderIconRgba(32);
@@ -386,8 +411,8 @@ function main() {
   const icoPath = path.join(ASSETS_DIR, 'icon.ico');
   fs.writeFileSync(icoPath, icoBuffer);
 
-  console.log('Generated WorkMesh icon assets:');
-  for (const file of [svgPath, iconPngPath, trayPngPath, icoPath]) {
+  console.log('Generated TwinSync Pro icon assets:');
+  for (const file of [svgPath, docsSvgPath, iconPngPath, trayPngPath, icoPath]) {
     const stat = fs.statSync(file);
     console.log(` - ${path.relative(path.resolve(__dirname, '..'), file)} (${stat.size} bytes)`);
   }

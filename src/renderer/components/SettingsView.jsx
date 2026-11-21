@@ -18,10 +18,15 @@ import {
   Users,
   History,
   RefreshCw,
-  Search
+  Search,
+  Lock,
+  Info,
+  CheckCircle2
 } from 'lucide-react';
 import {
   UserAvatar,
+  DeviceTypeBadge,
+  copyTextSafe,
   resizeImageToDataUrl,
   SECURITY_QUESTION_KEYS,
   SecurityQaFields
@@ -76,6 +81,12 @@ export default function SettingsView({
   const [securityAnswer, setSecurityAnswer] = useState('');
   const [savingSecurity, setSavingSecurity] = useState(false);
 
+  // Account PIN state
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [showPin, setShowPin] = useState(false);
+  const [savingPin, setSavingPin] = useState(false);
+
   // Peers copy feedback
   const [copiedPeerId, setCopiedPeerId] = useState(null);
 
@@ -101,10 +112,11 @@ export default function SettingsView({
   }, [identity?.display_name, identity?.avatar_data, identity?.security_question, t]);
 
   const loadAuditLogs = useCallback(async () => {
-    if (!window.workmesh?.getAuditLogs) return;
+    const api = window.twinsync || window.workmesh;
+    if (!api?.getAuditLogs) return;
     setLoadingLogs(true);
     try {
-      const res = await window.workmesh.getAuditLogs({
+      const res = await api.getAuditLogs({
         search: auditSearch.trim() || undefined,
         limit: 100
       });
@@ -134,6 +146,7 @@ export default function SettingsView({
 
   const handleSaveProfile = async (e) => {
     e.preventDefault();
+    const api = window.twinsync || window.workmesh;
     const trimmed = displayName.trim();
     if (!trimmed) {
       onToast?.(t('onboardingErrorNameRequired'), 'error');
@@ -141,7 +154,7 @@ export default function SettingsView({
     }
     setSavingProfile(true);
     try {
-      const res = await window.workmesh.updateProfile({
+      const res = await api.updateProfile({
         displayName: trimmed,
         avatarData: avatarData || null
       });
@@ -159,6 +172,7 @@ export default function SettingsView({
 
   const handleSaveSecurityQA = async (e) => {
     e.preventDefault();
+    const api = window.twinsync || window.workmesh;
     const resolvedQuestion =
       selectedPreset === 'custom' ? customQuestion.trim() : t(selectedPreset);
     const trimmedAnswer = securityAnswer.trim();
@@ -174,7 +188,7 @@ export default function SettingsView({
 
     setSavingSecurity(true);
     try {
-      const res = await window.workmesh.updateSecurityQA({
+      const res = await api.updateSecurityQA({
         securityQuestion: resolvedQuestion,
         securityAnswer: trimmedAnswer
       });
@@ -191,24 +205,52 @@ export default function SettingsView({
     }
   };
 
+  const handleSaveAccountPin = async (e) => {
+    e.preventDefault();
+    const api = window.twinsync || window.workmesh;
+    const pin = newPin.trim();
+    const confirm = confirmPin.trim();
+    if (!/^\d{4,6}$/.test(pin)) {
+      onToast?.(t('settingsPinInvalidFormat'), 'error');
+      return;
+    }
+    if (pin !== confirm) {
+      onToast?.(t('settingsPinMismatch'), 'error');
+      return;
+    }
+    setSavingPin(true);
+    try {
+      const res = await api.updateAccountPin(pin);
+      if (res && res.ok === false) {
+        throw new Error(res.error || t('error'));
+      }
+      setNewPin('');
+      setConfirmPin('');
+      await onRefreshBootstrap?.();
+      onToast?.(t('settingsPinSaved'), 'success');
+    } catch (err) {
+      onToast?.(err?.message || t('error'), 'error');
+    } finally {
+      setSavingPin(false);
+    }
+  };
+
   const handleCopyKey = async () => {
     if (!masterRecoveryKey) return;
-    try {
-      await navigator.clipboard.writeText(masterRecoveryKey);
+    const ok = await copyTextSafe(masterRecoveryKey);
+    if (ok) {
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 1800);
-    } catch {
+    } else {
       onToast?.(t('error'), 'error');
     }
   };
 
   const handleCopyPeerUuid = async (uuid) => {
-    try {
-      await navigator.clipboard.writeText(uuid);
+    const ok = await copyTextSafe(uuid);
+    if (ok) {
       setCopiedPeerId(uuid);
       setTimeout(() => setCopiedPeerId(null), 1600);
-    } catch {
-      // ignore
     }
   };
 
@@ -433,7 +475,107 @@ export default function SettingsView({
             </div>
           </div>
 
-          {/* 2. Security & Offline Recovery */}
+          {/* 2. Account PIN for Mobile & Web Portal */}
+          <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
+                <Lock className="w-4 h-4 text-indigo-500" strokeWidth={1.5} />
+                <span>{t('settingsPinSection')}</span>
+              </div>
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ${
+                  identity?.has_pin
+                    ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-amber-100 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300'
+                }`}
+              >
+                {identity?.has_pin && (
+                  <CheckCircle2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                )}
+                <span>
+                  {identity?.has_pin
+                    ? t('settingsPinConfigured')
+                    : t('settingsPinNotSet')}
+                </span>
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              {t('settingsPinDesc')}
+            </p>
+
+            <form onSubmit={handleSaveAccountPin} noValidate className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                    {t('settingsPinNew')}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPin ? 'text' : 'password'}
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={newPin}
+                      onChange={(e) =>
+                        setNewPin(e.target.value.replace(/\D/g, '').slice(0, 6))
+                      }
+                      placeholder={t('settingsPinPlaceholder')}
+                      dir="ltr"
+                      className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 pe-11 py-2.5 text-sm font-mono tracking-widest text-slate-900 dark:text-slate-100 placeholder:text-slate-400 placeholder:tracking-normal placeholder:font-sans focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPin((prev) => !prev)}
+                      title={showPin ? t('settingsHideKey') : t('settingsRevealKey')}
+                      className="absolute inset-y-0 end-2 my-auto h-7 w-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                    >
+                      {showPin ? (
+                        <EyeOff className="w-4 h-4" strokeWidth={1.5} />
+                      ) : (
+                        <Eye className="w-4 h-4" strokeWidth={1.5} />
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                    {t('settingsPinConfirm')}
+                  </label>
+                  <input
+                    type={showPin ? 'text' : 'password'}
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={confirmPin}
+                    onChange={(e) =>
+                      setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 6))
+                    }
+                    placeholder={t('settingsPinPlaceholder')}
+                    dir="ltr"
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono tracking-widest text-slate-900 dark:text-slate-100 placeholder:text-slate-400 placeholder:tracking-normal placeholder:font-sans focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500 transition"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/70 dark:border-indigo-500/25 px-3.5 py-2.5 flex items-start gap-2 text-xs text-indigo-900 dark:text-indigo-200">
+                <Info className="w-4 h-4 shrink-0 mt-0.5 text-indigo-600 dark:text-indigo-400" strokeWidth={1.5} />
+                <span>{t('settingsPinResetNote')}</span>
+              </div>
+
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={savingPin}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-sm transition disabled:opacity-60"
+                >
+                  <Lock className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <span>{savingPin ? t('loading') : t('settingsPinSave')}</span>
+                </button>
+              </div>
+            </form>
+          </section>
+
+          {/* 3. Security & Offline Recovery */}
           <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-5">
             <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
               <Shield className="w-4 h-4 text-emerald-500" strokeWidth={1.5} />
@@ -551,6 +693,7 @@ export default function SettingsView({
                             <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
                               {peer.display_name || t('unknown')}
                             </span>
+                            <DeviceTypeBadge deviceType={peer.device_type} t={t} />
                             <span
                               className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
                                 isOnline

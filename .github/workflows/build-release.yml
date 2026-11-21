@@ -1,4 +1,4 @@
-name: Build & Release WorkMesh Windows Installer
+name: Build & Release TwinSync Pro Windows Installer
 
 on:
   push:
@@ -49,7 +49,7 @@ jobs:
           npm run generate-icons
           npm run build
 
-      - name: Run 13-suite P2P integration tests
+      - name: Run 17-suite P2P integration tests
         run: npm test
 
   build-and-release-windows:
@@ -119,7 +119,7 @@ jobs:
       - name: Upload installer build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WorkMesh-Windows-Installer-${{ steps.meta.outputs.tag }}
+          name: TwinSync-Pro-Windows-Installer-${{ steps.meta.outputs.tag }}
           path: |
             release/*.exe
             release/*.blockmap
@@ -132,23 +132,23 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: WorkMesh ${{ steps.meta.outputs.tag }} — Windows Installer
+          name: TwinSync Pro ${{ steps.meta.outputs.tag }} — Windows Installer
           draft: false
           prerelease: false
           make_latest: true
           generate_release_notes: true
           body: |
-            ## WorkMesh Desktop Installer (${{ steps.meta.outputs.tag }})
+            ## TwinSync Pro Desktop Installer (${{ steps.meta.outputs.tag }})
 
-            تطبيق **WorkMesh** اللامركزي للمحادثة وإدارة الملفات عبر الشبكة المحلية (P2P LAN Mesh & Local-First) بدون خادم مركزي أو إنترنت.
+            تطبيق **TwinSync Pro** اللامركزي للمحادثة وإدارة الملفات عبر الشبكة المحلية (P2P LAN Distributed Workspace & Local-First) بدون خادم مركزي أو إنترنت.
 
             ### مواصفات المثبت (Windows Installer)
             - **التوافق:** Windows 7 (SP1) و Windows 10 و Windows 11 (مثبّت موحد `x64` + `ia32`).
-            - **التركيب:** معالج `Next > Next > Install` يُنشئ مجلد المزامنة المخفي `C:\ProgramData\WorkMesh_Vault` تلقائياً مع صلاحيات التشغيل والبدء التلقائي مع الويندوز (`Auto-Start`) وقواعد الجدار الناري للشبكة المحلية.
-            - **المزايا المضمنة:** `Electron v22.3.27`، قاعدة بيانات `better-sqlite3` المحلية، ربط الهاتف عبر `QR Code`، العزل المؤقت `Temp Shadow Sandbox`، الوراثة الهرمية للصلاحيات واستعادة كلمة المرور بدون إنترنت، وسلة المحذوفات المعزولة.
+            - **التركيب:** معالج `Next > Next > Install` يُنشئ مجلد المزامنة المخفي `C:\ProgramData\TwinSync_Vault` تلقائياً مع صلاحيات التشغيل والبدء التلقائي مع الويندوز (`Auto-Start`) وقواعد الجدار الناري للشبكة المحلية.
+            - **المزايا المضمنة:** `Electron v22.3.27`، قاعدة بيانات `better-sqlite3` المحلية، الحسابات الموزعة والتجوال بين الأجهزة (`PC Roaming`) برمز `PIN`، بوابة الويب والهاتف الموحدة (`?mode=portal`) وربط `QR Code` السريع، العزل المؤقت `Temp Shadow Sandbox`، الوراثة الهرمية للصلاحيات واستعادة كلمة المرور بدون إنترنت، وسلة المحذوفات المعزولة.
 
             ### الملفات المرفقة (Assets)
-            - `WorkMesh-Setup-${{ steps.meta.outputs.version }}.exe` — ملف التثبيت الكامل لويندوز.
+            - `TwinSync-Pro-Setup-${{ steps.meta.outputs.version }}.exe` — ملف التثبيت الكامل لويندوز.
             - `SHA256SUMS.txt` — بصمة التحقق من سلامة الملفات.
           files: |
             release/*.exe
