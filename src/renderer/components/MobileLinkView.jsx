@@ -131,7 +131,7 @@ export default function MobileLinkView({ t, onToast }) {
     pairing?.portal?.primaryUrl || portalUrls[0]?.url || '';
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
+    <div className="flex-1 min-w-0 h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
       {/* Header */}
       <header className="px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div className="flex items-center gap-3">
@@ -227,12 +227,12 @@ export default function MobileLinkView({ t, onToast }) {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-6">
         {activeTab === 'quickLink' ? (
           /* TAB 1: Quick Link to This PC */
-          <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[330px_1fr] gap-6 items-start">
+          <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[330px_minmax(0,1fr)] gap-6 items-start">
             {/* QR Card */}
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 shadow-sm flex flex-col items-center text-center">
+            <div className="min-w-0 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 shadow-sm flex flex-col items-center text-center">
               <div className="w-60 h-60 rounded-2xl bg-white p-3 border border-slate-200 shadow-inner flex items-center justify-center">
                 {loading ? (
                   <RefreshCw className="w-7 h-7 animate-spin text-indigo-500" strokeWidth={1.5} />
@@ -265,8 +265,8 @@ export default function MobileLinkView({ t, onToast }) {
             </div>
 
             {/* URLs & Instructions */}
-            <div className="space-y-5">
-              <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
+            <div className="min-w-0 space-y-5">
+              <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
                 <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
                   <Wifi className="w-4 h-4 text-emerald-500" strokeWidth={1.5} />
                   <span>{t('mobileUrlsTitle')}</span>
@@ -283,9 +283,9 @@ export default function MobileLinkView({ t, onToast }) {
                       return (
                         <div
                           key={`${item.label}-${idx}`}
-                          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 p-3 flex items-center justify-between gap-3"
+                          className="min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 p-3 flex items-center justify-between gap-3"
                         >
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <div className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">
                               {item.label}
                             </div>
@@ -316,7 +316,7 @@ export default function MobileLinkView({ t, onToast }) {
               </section>
 
               {/* Instructions & Security Note */}
-              <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
+              <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
                 <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
                   <Smartphone className="w-4 h-4 text-indigo-500" strokeWidth={1.5} />
                   <span>{t('mobileInstructionsTitle')}</span>
@@ -335,9 +335,9 @@ export default function MobileLinkView({ t, onToast }) {
           </div>
         ) : (
           /* TAB 2: Universal Web & Mobile Portal */
-          <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-6 items-start">
+          <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-6 items-start">
             {/* Portal QR Card + Prominent Direct URL + Copy Link Button directly below QR */}
-            <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 shadow-sm flex flex-col items-center text-center">
+            <div className="min-w-0 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 shadow-sm flex flex-col items-center text-center">
               <div className="w-60 h-60 rounded-2xl bg-white p-3 border border-slate-200 shadow-inner flex items-center justify-center">
                 {loading ? (
                   <RefreshCw className="w-7 h-7 animate-spin text-indigo-500" strokeWidth={1.5} />
@@ -396,9 +396,9 @@ export default function MobileLinkView({ t, onToast }) {
             </div>
 
             {/* Adapter Portal URLs, Zero-Footprint Instructions & PIN Tip */}
-            <div className="space-y-5">
+            <div className="min-w-0 space-y-5">
               {portalUrls.length > 1 && (
-                <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
+                <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
                   <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
                     <Wifi className="w-4 h-4 text-emerald-500" strokeWidth={1.5} />
                     <span>{t('mobilePortalAdaptersTitle')}</span>
@@ -409,9 +409,9 @@ export default function MobileLinkView({ t, onToast }) {
                       return (
                         <div
                           key={`${item.label}-${idx}`}
-                          className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 p-3 flex items-center justify-between gap-3"
+                          className="min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 p-3 flex items-center justify-between gap-3"
                         >
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <div className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">
                               {item.label}
                             </div>
@@ -442,7 +442,7 @@ export default function MobileLinkView({ t, onToast }) {
               )}
 
               {/* Zero Footprint & Phone Camera Instructions */}
-              <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
+              <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
                 <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
                   <Globe className="w-4 h-4 text-indigo-500" strokeWidth={1.5} />
                   <span>{t('mobilePortalInstructionsTitle')}</span>

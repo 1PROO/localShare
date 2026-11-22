@@ -6,6 +6,7 @@ const os = require('os');
 const dgram = require('dgram');
 const crypto = require('crypto');
 const EventEmitter = require('events');
+const { execFile } = require('child_process');
 const WebSocket = require('ws');
 const chokidar = require('chokidar');
 
@@ -312,6 +313,171 @@ function normalizeRemoteIp(rawIp) {
   return s.startsWith('::ffff:') ? s.slice(7) : s;
 }
 
+function getLocalIpv4Set() {
+  const ips = new Set();
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const info of ifaces[name] || []) {
+      if (info.family === 'IPv4' && info.address) {
+        ips.add(info.address);
+      }
+    }
+  }
+  return ips;
+}
+
+function parseManualPeerEntry(raw, defaultWsPort = 41235, defaultUdpPort = 41234) {
+  let str = String(raw || '').trim();
+  if (!str) return null;
+
+  let wasHttpPortalUrl = false;
+  if (/^https?:\/\//i.test(str)) {
+    wasHttpPortalUrl = true;
+  }
+
+  let host = '';
+  let port = null;
+
+  if (/^[a-z]+:\/\//i.test(str)) {
+    try {
+      const u = new URL(str);
+      host = normalizeRemoteIp(u.hostname);
+      if (u.port) port = Number(u.port);
+    } catch (_) {
+      return null;
+    }
+  } else {
+    str = str.split('/')[0].trim();
+    const colonIdx = str.lastIndexOf(':');
+    if (colonIdx > 0 && str.indexOf(':') === colonIdx) {
+      host = str.slice(0, colonIdx).trim();
+      const portStr = str.slice(colonIdx + 1).trim();
+      if (!/^\d+$/.test(portStr)) return null;
+      port = Number(portStr);
+    } else {
+      host = str;
+    }
+    host = normalizeRemoteIp(host);
+  }
+
+  if (!host || /\s/.test(host) || host.length > 253) return null;
+  const isIpv4 = ipToInt(host) !== null;
+  const isHostname = /^[a-zA-Z0-9.-]+$/.test(host) && !host.startsWith('.') && !host.endsWith('.');
+  if (!isIpv4 && !isHostname) return null;
+
+  if (wasHttpPortalUrl && (!port || port === 41236)) {
+    port = defaultWsPort;
+  }
+
+  const resolvedWsPort = port || defaultWsPort;
+  if (!Number.isInteger(resolvedWsPort) || resolvedWsPort < 1 || resolvedWsPort > 65535) {
+    return null;
+  }
+
+  return {
+    host,
+    wsPort: resolvedWsPort,
+    udpPort: defaultUdpPort,
+  };
+}
+
+let _cachedTailscaleBin = null;
+
+function resolveTailscaleCandidates() {
+  if (_cachedTailscaleBin) {
+    return [_cachedTailscaleBin];
+  }
+  if (process.platform === 'win32') {
+    return [
+      'tailscale.exe',
+      'C:\\Program Files\\Tailscale\\tailscale.exe',
+      'C:\\Program Files (x86)\\Tailscale\\tailscale.exe',
+    ];
+  }
+  if (process.platform === 'darwin') {
+    return [
+      'tailscale',
+      '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+      '/opt/homebrew/bin/tailscale',
+      '/usr/local/bin/tailscale',
+    ];
+  }
+  return ['tailscale', '/usr/bin/tailscale', '/usr/local/bin/tailscale'];
+}
+
+function execTailscaleJson(bin) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      bin,
+      ['status', '--json'],
+      {
+        timeout: 3000,
+        maxBuffer: 2 * 1024 * 1024,
+        windowsHide: true,
+      },
+      (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        try {
+          resolve(JSON.parse(String(stdout || '{}')));
+        } catch (parseErr) {
+          reject(parseErr);
+        }
+      }
+    );
+  });
+}
+
+async function queryTailscaleStatus() {
+  const candidates = resolveTailscaleCandidates();
+  let data = null;
+
+  for (const bin of candidates) {
+    try {
+      data = await execTailscaleJson(bin);
+      _cachedTailscaleBin = bin;
+      break;
+    } catch (_) {
+      if (bin === _cachedTailscaleBin) {
+        _cachedTailscaleBin = null;
+      }
+    }
+  }
+
+  if (!data || typeof data !== 'object') {
+    return { available: false, running: false, selfIps: [], onlinePeers: [] };
+  }
+
+  const selfIps = (Array.isArray(data.TailscaleIPs) ? data.TailscaleIPs : (data.Self?.TailscaleIPs || []))
+    .filter((ip) => ipToInt(ip) !== null);
+  const selfSet = new Set(selfIps);
+
+  const onlinePeers = [];
+  const peersObj = data.Peer && typeof data.Peer === 'object' ? data.Peer : {};
+  for (const p of Object.values(peersObj)) {
+    if (!p || p.Online !== true) continue;
+    const ipv4 = Array.isArray(p.TailscaleIPs)
+      ? p.TailscaleIPs.find((ip) => ipToInt(ip) !== null)
+      : null;
+    if (!ipv4 || selfSet.has(ipv4)) continue;
+    onlinePeers.push({
+      ip: ipv4,
+      hostName: p.HostName || '',
+      dnsName: p.DNSName || '',
+      os: String(p.OS || '').toLowerCase(),
+    });
+  }
+
+  return {
+    available: true,
+    running: data.BackendState === 'Running',
+    selfIps,
+    onlinePeers,
+  };
+}
+
 function validateNameSegment(name) {
   const clean = String(name || '').trim();
   if (!clean || clean === '.' || clean === '..' || /[\/\\\0]/.test(clean)) {
@@ -348,6 +514,8 @@ class MeshNetwork extends EventEmitter {
     discoveryPorts = null,
     discoveryTargets = null,
     discoveryIntervalMs = 3000,
+    enableTailscaleDiscovery = null,
+    tailscalePollIntervalMs = 15000,
   }) {
     super();
     this.db = db;
@@ -358,6 +526,11 @@ class MeshNetwork extends EventEmitter {
     this.discoveryPorts = discoveryPorts;
     this.discoveryTargets = discoveryTargets;
     this.discoveryIntervalMs = discoveryIntervalMs;
+    this.enableTailscaleDiscovery =
+      enableTailscaleDiscovery === null
+        ? !discoveryTargets && !broadcastAddresses
+        : Boolean(enableTailscaleDiscovery);
+    this.tailscalePollIntervalMs = tailscalePollIntervalMs;
 
     this.udpPort = udpPort;
     this.wsPort = wsPort;
@@ -365,6 +538,15 @@ class MeshNetwork extends EventEmitter {
     this.wss = null;
     this.watcher = null;
     this.discoveryTimer = null;
+    this.tailscaleTimer = null;
+    this._tailscaleBusy = false;
+    this.tailscaleStatus = {
+      available: false,
+      running: false,
+      selfIps: [],
+      onlinePeers: [],
+      lastCheckedAt: 0,
+    };
 
     this.peerSockets = new Map(); // peerUuid -> WebSocket
     this.connectingPeers = new Map(); // peerUuid -> WebSocket
@@ -375,6 +557,8 @@ class MeshNetwork extends EventEmitter {
     this.activeTransfers = new Map(); // key -> Promise
     this.pendingTransfers = new Map(); // transferId -> transferState
     this._beaconCooldown = new Map(); // peerUuid -> ts
+    this._directProbeCooldown = new Map(); // host:wsPort -> ts
+    this._inFlightDirectProbes = new Set(); // host:wsPort
     this.hostedMobilePeers = new Map(); // peerUuid -> count
     this.remoteHostedPeers = new Map(); // peerUuid -> Set<gatewayUuid>
 
@@ -595,6 +779,16 @@ class MeshNetwork extends EventEmitter {
     await this._startUdpDiscovery();
     this._startChokidar();
 
+    this._probeManualPeers({ force: true });
+
+    if (this.enableTailscaleDiscovery) {
+      this.refreshTailscalePeers({ forceProbe: true }).catch(() => {});
+      this.tailscaleTimer = setInterval(() => {
+        this.refreshTailscalePeers().catch(() => {});
+      }, this.tailscalePollIntervalMs);
+      if (this.tailscaleTimer.unref) this.tailscaleTimer.unref();
+    }
+
     return this.getStatus();
   }
 
@@ -605,6 +799,14 @@ class MeshNetwork extends EventEmitter {
       clearInterval(this.discoveryTimer);
       this.discoveryTimer = null;
     }
+
+    if (this.tailscaleTimer) {
+      clearInterval(this.tailscaleTimer);
+      this.tailscaleTimer = null;
+    }
+
+    this._inFlightDirectProbes.clear();
+    this._directProbeCooldown.clear();
 
     for (const rec of this.reconnectTimers.values()) {
       clearTimeout(rec.timer);
@@ -683,6 +885,17 @@ class MeshNetwork extends EventEmitter {
       myUuid: this.myUuid,
       connectedPeers,
       onlineCount: connectedPeers.length,
+      tailscale: this.tailscaleStatus,
+      manualPeers: this.getManualPeers(),
+    };
+  }
+
+  getNetworkDiscoveryInfo() {
+    return {
+      wsPort: this.wsPort,
+      udpPort: this.udpPort,
+      tailscale: this.tailscaleStatus,
+      manualPeers: this.getManualPeers(),
     };
   }
 
@@ -746,20 +959,25 @@ class MeshNetwork extends EventEmitter {
     });
   }
 
-  connectToPeer(ip, wsPort, expectedUuid = null) {
-    if (this._stopped || !ip || !wsPort) return;
+  connectToPeer(ip, wsPort, expectedUuid = null, opts = {}) {
+    if (this._stopped || !ip || !wsPort) {
+      if (typeof opts.onSettled === 'function') opts.onSettled();
+      return;
+    }
     const cleanIp = normalizeRemoteIp(ip);
 
     if (expectedUuid) {
       const existing = this.peerSockets.get(expectedUuid);
       if (existing && existing.readyState === WebSocket.OPEN) {
-        if (existing._remoteIp === cleanIp && existing._remoteWsPort === wsPort) {
+        if (existing._remoteIp === cleanIp && Number(existing._remoteWsPort) === Number(wsPort)) {
+          if (typeof opts.onSettled === 'function') opts.onSettled();
           return;
         }
       }
       const inFlight = this.connectingPeers.get(expectedUuid);
       if (inFlight && (inFlight.readyState === WebSocket.CONNECTING || inFlight.readyState === WebSocket.OPEN)) {
-        if (inFlight._remoteIp === cleanIp && inFlight._remoteWsPort === wsPort) {
+        if (inFlight._remoteIp === cleanIp && Number(inFlight._remoteWsPort) === Number(wsPort)) {
+          if (typeof opts.onSettled === 'function') opts.onSettled();
           return;
         }
         try {
@@ -770,17 +988,38 @@ class MeshNetwork extends EventEmitter {
     }
 
     const url = `ws://${cleanIp}:${wsPort}`;
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, {
+      handshakeTimeout: Number(opts.handshakeTimeout) || 5000,
+    });
     ws._direction = 'outbound';
     ws._remoteIp = cleanIp;
-    ws._remoteWsPort = wsPort;
+    ws._remoteWsPort = Number(wsPort);
     ws._expectedUuid = expectedUuid;
 
     if (expectedUuid) {
       this.connectingPeers.set(expectedUuid, ws);
     }
 
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      if (typeof opts.onSettled === 'function') {
+        try {
+          opts.onSettled();
+        } catch (_) {}
+      }
+    };
+
+    ws.once('error', () => {
+      settle();
+    });
+    ws.once('close', () => {
+      settle();
+    });
+
     ws.on('open', () => {
+      settle();
       if (this._stopped) {
         ws.close();
         return;
@@ -954,7 +1193,7 @@ class MeshNetwork extends EventEmitter {
     if (this._stopped || !this.udpSocket) return;
     const packet = this._buildDiscoveryPacket();
 
-    if (Array.isArray(this.discoveryTargets) && this.discoveryTargets.length > 0) {
+    if (Array.isArray(this.discoveryTargets)) {
       for (const t of this.discoveryTargets) {
         if (!t || !t.host || !t.port) continue;
         this.udpSocket.send(packet, Number(t.port), String(t.host), () => {});
@@ -963,7 +1202,7 @@ class MeshNetwork extends EventEmitter {
     }
 
     const addrs = new Set(
-      Array.isArray(this.broadcastAddresses) && this.broadcastAddresses.length > 0
+      Array.isArray(this.broadcastAddresses)
         ? this.broadcastAddresses
         : computeOsBroadcastAddresses()
     );
@@ -979,8 +1218,257 @@ class MeshNetwork extends EventEmitter {
     for (const port of ports) {
       if (!port) continue;
       for (const host of addrs) {
-        this.udpSocket.send(packet, Number(port), host, () => {});
+        try {
+          this.udpSocket.send(packet, Number(port), host, () => {});
+        } catch (_) {}
       }
+    }
+
+    // Unicast UDP discovery beacons to known Tailscale tailnet peers
+    const tsPeers = Array.isArray(this.tailscaleStatus?.onlinePeers)
+      ? this.tailscaleStatus.onlinePeers
+      : [];
+    const tsPorts = new Set([this.udpPort || 41234, 41234]);
+    for (const peer of tsPeers) {
+      if (!peer || !peer.ip) continue;
+      for (const port of tsPorts) {
+        if (!port) continue;
+        try {
+          this.udpSocket.send(packet, Number(port), String(peer.ip), () => {});
+        } catch (_) {}
+      }
+    }
+
+    // Unicast UDP discovery + direct WebSocket probe for saved manual peer IPs
+    const allowUdp =
+      !(Array.isArray(this.broadcastAddresses) && this.broadcastAddresses.length === 0) &&
+      !Array.isArray(this.discoveryTargets);
+    if (allowUdp) {
+      for (const entry of this.getManualPeers()) {
+        const udpPort = Number(entry.udpPort) || 41234;
+        try {
+          this.udpSocket.send(packet, udpPort, String(entry.host), () => {});
+        } catch (_) {}
+      }
+    }
+    this._probeManualPeers({ force: false });
+  }
+
+  _isSelfEndpoint(cleanIp, wsPort) {
+    if (!cleanIp) return false;
+    if (Number(wsPort) !== Number(this.wsPort)) return false;
+    const localIps = getLocalIpv4Set();
+    if (localIps.has(cleanIp)) return true;
+    const tsSelf = Array.isArray(this.tailscaleStatus?.selfIps) ? this.tailscaleStatus.selfIps : [];
+    return tsSelf.includes(cleanIp);
+  }
+
+  _isIpAlreadyConnected(cleanIp, wsPort = null) {
+    if (!cleanIp) return false;
+    for (const ws of this.peerSockets.values()) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+      if (ws._remoteIp !== cleanIp) continue;
+      if (!wsPort || !ws._remoteWsPort || Number(ws._remoteWsPort) === Number(wsPort)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  _probeDirectEndpoint(ip, wsPort, { force = false, udpPort = 41234 } = {}) {
+    if (this._stopped || !ip || !wsPort) return false;
+    const cleanIp = normalizeRemoteIp(ip);
+    const port = Number(wsPort);
+    if (!cleanIp || !port || this._isSelfEndpoint(cleanIp, port)) return false;
+    if (this._isIpAlreadyConnected(cleanIp, port)) return false;
+
+    const key = `${cleanIp}:${port}`;
+    if (this._inFlightDirectProbes.has(key)) return false;
+
+    const now = Date.now();
+    const last = this._directProbeCooldown.get(key) || 0;
+    if (!force && now - last < 20000) return false;
+
+    this._directProbeCooldown.set(key, now);
+    this._inFlightDirectProbes.add(key);
+
+    const allowUdp =
+      !(Array.isArray(this.broadcastAddresses) && this.broadcastAddresses.length === 0) &&
+      !Array.isArray(this.discoveryTargets);
+    if (allowUdp && this.udpSocket && udpPort) {
+      try {
+        const packet = this._buildDiscoveryPacket();
+        this.udpSocket.send(packet, Number(udpPort), cleanIp, () => {});
+      } catch (_) {}
+    }
+
+    this.connectToPeer(cleanIp, port, null, {
+      handshakeTimeout: 3000,
+      onSettled: () => {
+        this._inFlightDirectProbes.delete(key);
+      },
+    });
+    return true;
+  }
+
+  getManualPeers() {
+    if (!this.db || this.db.closed || typeof this.db.getSetting !== 'function') {
+      return [];
+    }
+    const raw = this.db.getSetting('manual_peers', []);
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set();
+    const result = [];
+    for (const item of raw) {
+      const parsed =
+        typeof item === 'string'
+          ? parseManualPeerEntry(item)
+          : parseManualPeerEntry(
+              item && item.host ? `${item.host}:${item.wsPort || 41235}` : ''
+            );
+      if (!parsed) continue;
+      const key = `${parsed.host}:${parsed.wsPort}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        host: parsed.host,
+        wsPort: parsed.wsPort,
+        udpPort: Number(item?.udpPort) || parsed.udpPort,
+        addedAt: Number(item?.addedAt) || Date.now(),
+      });
+    }
+    return result;
+  }
+
+  _probeManualPeers({ force = false } = {}) {
+    if (this._stopped) return;
+    for (const entry of this.getManualPeers()) {
+      this._probeDirectEndpoint(entry.host, entry.wsPort, {
+        force,
+        udpPort: entry.udpPort || 41234,
+      });
+    }
+  }
+
+  async connectManualPeer(rawAddress) {
+    const parsed = parseManualPeerEntry(rawAddress, 41235, 41234);
+    if (!parsed) {
+      throw makeCodedError('INVALID_ADDRESS', 'Invalid peer IP or hostname');
+    }
+    if (this._isSelfEndpoint(parsed.host, parsed.wsPort)) {
+      throw makeCodedError('CANNOT_CONNECT_SELF', 'Cannot connect to this same device');
+    }
+
+    const existing = this.getManualPeers();
+    const key = `${parsed.host}:${parsed.wsPort}`;
+    const entry = {
+      host: parsed.host,
+      wsPort: parsed.wsPort,
+      udpPort: parsed.udpPort,
+      addedAt: Date.now(),
+    };
+    const nextList = [
+      entry,
+      ...existing.filter((p) => `${p.host}:${p.wsPort}` !== key),
+    ];
+    this.db.setSetting('manual_peers', nextList);
+
+    this._probeDirectEndpoint(entry.host, entry.wsPort, {
+      force: true,
+      udpPort: entry.udpPort || this.udpPort || 41234,
+    });
+
+    const connected = await new Promise((resolve) => {
+      if (this._isIpAlreadyConnected(entry.host, entry.wsPort)) {
+        resolve(true);
+        return;
+      }
+      let done = false;
+      let pollId = null;
+      let timeoutId = null;
+      const finish = (val) => {
+        if (done) return;
+        done = true;
+        this.removeListener('peers:changed', checkNow);
+        if (pollId) clearInterval(pollId);
+        if (timeoutId) clearTimeout(timeoutId);
+        resolve(val);
+      };
+      const checkNow = () => {
+        if (this._isIpAlreadyConnected(entry.host, entry.wsPort)) {
+          finish(true);
+        }
+      };
+      this.on('peers:changed', checkNow);
+      pollId = setInterval(checkNow, 100);
+      if (pollId.unref) pollId.unref();
+      timeoutId = setTimeout(() => finish(this._isIpAlreadyConnected(entry.host, entry.wsPort)), 2500);
+      if (timeoutId.unref) timeoutId.unref();
+    });
+
+    return {
+      ok: true,
+      entry,
+      connected,
+      manualPeers: nextList,
+    };
+  }
+
+  removeManualPeer(rawHostOrHostPort) {
+    const target = String(rawHostOrHostPort || '').trim();
+    const parsed = parseManualPeerEntry(target);
+    const existing = this.getManualPeers();
+    const nextList = existing.filter((item) => {
+      const fullKey = `${item.host}:${item.wsPort}`;
+      if (fullKey === target || item.host === target) return false;
+      if (parsed && fullKey === `${parsed.host}:${parsed.wsPort}`) return false;
+      return true;
+    });
+    this.db.setSetting('manual_peers', nextList);
+    return {
+      ok: true,
+      manualPeers: nextList,
+    };
+  }
+
+  async refreshTailscalePeers({ forceProbe = false } = {}) {
+    if (!this.enableTailscaleDiscovery || this._stopped) {
+      return this.tailscaleStatus;
+    }
+    if (this._tailscaleBusy) {
+      return this.tailscaleStatus;
+    }
+    this._tailscaleBusy = true;
+    try {
+      const status = await queryTailscaleStatus();
+      this.tailscaleStatus = {
+        ...status,
+        lastCheckedAt: Date.now(),
+      };
+      if (this._stopped || !status.running) {
+        return this.tailscaleStatus;
+      }
+
+      const packet = this.udpSocket ? this._buildDiscoveryPacket() : null;
+      const udpPorts = new Set([this.udpPort || 41234, 41234]);
+      for (const peer of status.onlinePeers) {
+        if (!peer || !peer.ip) continue;
+        if (packet && this.udpSocket) {
+          for (const port of udpPorts) {
+            if (!port) continue;
+            try {
+              this.udpSocket.send(packet, Number(port), peer.ip, () => {});
+            } catch (_) {}
+          }
+        }
+        // Only direct-probe desktop OS peers on default TwinSync Pro WS port
+        if (peer.os !== 'android' && peer.os !== 'ios') {
+          this._probeDirectEndpoint(peer.ip, 41235, { force: forceProbe });
+        }
+      }
+      return this.tailscaleStatus;
+    } finally {
+      this._tailscaleBusy = false;
     }
   }
 
@@ -3819,4 +4307,5 @@ module.exports = {
   MeshNetwork,
   computeEffectiveAcl,
   canViewTrashItem,
+  parseManualPeerEntry,
 };

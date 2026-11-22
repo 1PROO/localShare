@@ -281,8 +281,8 @@
         <div class="grid-3">
           <div class="card">
             <div class="card-icon">🕸️</div>
-            <h3 data-i18n="f1Title">شبكة P2P واكتشاف تلقائي</h3>
-            <p data-i18n="f1Desc">اكتشاف فوري عبر UDP Broadcast واتصال WebSocket مباشر بالاعتماد على UUID الجهاز حتى لو تغيّر الـ IP، مع Delta Sync بعد انقطاع الشبكة.</p>
+            <h3 data-i18n="f1Title">شبكة P2P واكتشاف تلقائي وTailscale</h3>
+            <p data-i18n="f1Desc">اكتشاف فوري عبر UDP Broadcast وTailscale التلقائي والاتصال المباشر عبر IP بـ UUID ثابت مع عرض المتصلين حالياً فقط ومزامنة Delta Sync تلقائياً.</p>
           </div>
           <div class="card">
             <div class="card-icon">💬</div>
@@ -302,12 +302,12 @@
           <div class="card">
             <div class="card-icon">🗑️</div>
             <h3 data-i18n="f5Title">سلة محذوفات معزولة ومؤشر المتواجدين</h3>
-            <p data-i18n="f5Desc">شارة حيّة بعدد وأسماء فاتحي الملف مع منع الحذف والنقل أثناء التعديل النشط، وسلة محذوفات لـ 30 يوماً تحفظ صلاحيات الخصوصية للمالك فقط.</p>
+            <p data-i18n="f5Desc">شارة حيّة وشريط حالة مباشر داخل البطاقات مع تلميح عائم ذكي (Portal Tooltip) لا يُقص، وحماية الملفات أثناء التعديل النشط، وسلة محذوفات لـ 30 يوماً.</p>
           </div>
           <div class="card">
             <div class="card-icon">📱</div>
-            <h3 data-i18n="f6Title">بوابة الويب والهاتف الموحدة + QR Code</h3>
-            <p data-i18n="f6Desc">ربط سريع عبر QR أو البوابة الموحدة (?mode=portal) بواجهة متجاوبة (شاشة هاتف أو Split View 50/50 على المتصفح)، استعادة PIN أوفلاين وخصوصية Zero Footprint.</p>
+            <h3 data-i18n="f6Title">نسخة الويب الكاملة والهاتف + التثبيت أوفلاين</h3>
+            <p data-i18n="f6Desc">توجيه تلقائي لنسخة سطح المكتب الكاملة (/desktop/) على المتصفح أو واجهة الهاتف اللمسية، مع تحميل مثبّت الويندوز أوفلاين من البوابة مباشرة وخصوصية Zero Footprint.</p>
           </div>
         </div>
       </div>
@@ -317,18 +317,18 @@
       <div class="container">
         <div class="sec-head">
           <h2 data-i18n="installTitle">خطوات التثبيت على أجهزة بدون إنترنت</h2>
-          <p data-i18n="installSub">حمّل المثبّت مرة واحدة على جهاز متصل ثم انقله عبر فلاشة USB لأي عدد من الأجهزة.</p>
+          <p data-i18n="installSub">ثبّت البرنامج على أول جهاز فقط — وبقية أجهزة الشبكة تحمّله مباشرة عبر الراوتر من بوابة الويب أو عبر فلاشة USB.</p>
         </div>
         <div class="grid-3">
           <div class="card">
             <div class="step-num">1</div>
-            <h3 data-i18n="s1Title">انقل ملف Setup.exe</h3>
-            <p data-i18n="s1Desc">انسخ TwinSync-Pro-Setup-2.0.0.exe إلى كل جهاز Windows 7 SP1 أو Windows 10/11 (يدعم 64-bit و 32-bit من نفس الملف).</p>
+            <h3 data-i18n="s1Title">انقل أو شارك Setup.exe عبر الراوتر</h3>
+            <p data-i18n="s1Desc">انسخ TwinSync-Pro-Setup-2.1.0.exe لأول جهاز (x64 و32-bit مدمجان)، وسيتم حفظ نسخة مخفية في .installers لتحميلها مباشرة من أي متصفح على نفس الراوتر.</p>
           </div>
           <div class="card">
             <div class="step-num">2</div>
-            <h3 data-i18n="s2Title">Next &gt; Next &gt; Install</h3>
-            <p data-i18n="s2Desc">يُنشئ المعالج مجلد C:\ProgramData\TwinSync_Vault المخفي، ويضبط صلاحيات المستخدمين وجدار الحماية للشبكة المحلية، ويفعّل التشغيل التلقائي.</p>
+            <h3 data-i18n="s2Title">تجهيز تلقائي للشبكة والجدار الناري</h3>
+            <p data-i18n="s2Desc">يُنشئ المعالج مجلد C:\ProgramData\TwinSync_Vault، ويفتح منافذ UDP 41234 وTCP 41235/41236، مع فحص ذكي لتحويل شبكات Public إلى Private بضغطة زر.</p>
           </div>
           <div class="card">
             <div class="step-num">3</div>
@@ -417,8 +417,8 @@
         buildingNote: 'بانتظار إكمال أول بناء تلقائي في GitHub Actions',
         featuresTitle: 'قدرات مؤسسية متكاملة بدون خادم أو إنترنت',
         featuresSub: 'كل جهاز يحتفظ بنسخته المشتركة في خزنة مخفية مع مزامنة تفاضلية تلقائية بين الأقران.',
-        f1Title: 'شبكة P2P واكتشاف تلقائي',
-        f1Desc: 'اكتشاف فوري عبر UDP Broadcast واتصال WebSocket مباشر بالاعتماد على UUID الجهاز حتى لو تغيّر الـ IP، مع Delta Sync بعد انقطاع الشبكة.',
+        f1Title: 'شبكة P2P واكتشاف تلقائي وTailscale',
+        f1Desc: 'اكتشاف فوري عبر UDP Broadcast وTailscale التلقائي والاتصال المباشر عبر IP بـ UUID ثابت مع عرض المتصلين حالياً فقط ومزامنة Delta Sync تلقائياً.',
         f2Title: 'نظام محادثات بأسلوب WhatsApp',
         f2Desc: 'فقاعات مضبوطة، تجميع الرسائل المتتالية، قائمة منسدلة بالكليك يمين أو السهم، رسائل صوتية متعددة السرعة، والسحب للرد والضغطة المطوّلة على الهاتف.',
         f3Title: 'خزنة مخفية وعزل مؤقت (Sandbox)',
@@ -426,15 +426,15 @@
         f4Title: 'الحسابات الموزعة والتجوال بين الأجهزة',
         f4Desc: 'احمِ حسابك برمز PIN للدخول والتجوال (PC Roaming) من أي متصفح أو جهاز آخر في الشبكة حتى عند إطفاء جهازك، مع صلاحيات هرمية واستعادة أوفلاين.',
         f5Title: 'سلة محذوفات معزولة ومؤشر المتواجدين',
-        f5Desc: 'شارة حيّة بعدد وأسماء فاتحي الملف مع منع الحذف والنقل أثناء التعديل النشط، وسلة محذوفات لـ 30 يوماً تحفظ صلاحيات الخصوصية للمالك فقط.',
-        f6Title: 'بوابة الويب والهاتف الموحدة + QR Code',
-        f6Desc: 'ربط سريع عبر QR أو البوابة الموحدة (?mode=portal) بواجهة متجاوبة (شاشة هاتف أو Split View 50/50 على المتصفح)، استعادة PIN أوفلاين وخصوصية Zero Footprint.',
+        f5Desc: 'شارة حيّة وشريط حالة مباشر داخل البطاقات مع تلميح عائم ذكي (Portal Tooltip) لا يُقص، وحماية الملفات أثناء التعديل النشط، وسلة محذوفات لـ 30 يوماً.',
+        f6Title: 'نسخة الويب الكاملة والهاتف + التثبيت أوفلاين',
+        f6Desc: 'توجيه تلقائي لنسخة سطح المكتب الكاملة (/desktop/) على المتصفح أو واجهة الهاتف اللمسية، مع تحميل مثبّت الويندوز أوفلاين من البوابة مباشرة وخصوصية Zero Footprint.',
         installTitle: 'خطوات التثبيت على أجهزة بدون إنترنت',
-        installSub: 'حمّل المثبّت مرة واحدة على جهاز متصل ثم انقله عبر فلاشة USB لأي عدد من الأجهزة.',
-        s1Title: 'انقل ملف Setup.exe',
-        s1Desc: 'انسخ TwinSync-Pro-Setup-2.0.0.exe إلى كل جهاز Windows 7 SP1 أو Windows 10/11 (يدعم 64-bit و 32-bit من نفس الملف).',
-        s2Title: 'Next > Next > Install',
-        s2Desc: 'يُنشئ المعالج مجلد C:\\ProgramData\\TwinSync_Vault المخفي، ويضبط صلاحيات المستخدمين وجدار الحماية للشبكة المحلية، ويفعّل التشغيل التلقائي.',
+        installSub: 'ثبّت البرنامج على أول جهاز فقط — وبقية أجهزة الشبكة تحمّله مباشرة عبر الراوتر من بوابة الويب أو عبر فلاشة USB.',
+        s1Title: 'انقل أو شارك Setup.exe عبر الراوتر',
+        s1Desc: 'انسخ TwinSync-Pro-Setup-2.1.0.exe لأول جهاز (x64 و32-bit مدمجان)، وسيتم حفظ نسخة مخفية في .installers لتحميلها مباشرة من أي متصفح على نفس الراوتر.',
+        s2Title: 'تجهيز تلقائي للشبكة والجدار الناري',
+        s2Desc: 'يُنشئ المعالج مجلد C:\\ProgramData\\TwinSync_Vault، ويفتح منافذ UDP 41234 وTCP 41235/41236، مع فحص ذكي لتحويل شبكات Public إلى Private بضغطة زر.',
         s3Title: 'ابدأ العمل والتجوال فوراً',
         s3Desc: 'أدخل اسم الجهاز واحفظ مفتاح الاسترداد (12 رمزاً) واضبط رمز PIN في الإعدادات للتجوال عبر بوابة الويب والهاتف الموحدة على نفس الشبكة.',
         win7NoteTitle: 'ملاحظة لأجهزة Windows 7 الخام بدون تحديثات:',
@@ -476,8 +476,8 @@
         buildingNote: 'Waiting for initial GitHub Actions release build',
         featuresTitle: 'Enterprise Capabilities with Zero Server Required',
         featuresSub: 'Every PC stores a local-first hidden Vault synchronized peer-to-peer with automatic delta recovery.',
-        f1Title: 'P2P Mesh & UDP Auto-Discovery',
-        f1Desc: 'Zero-config LAN discovery via UDP Broadcast and WebSocket Mesh identified by persistent UUID even when IPs change, plus automatic Delta Sync on reconnect.',
+        f1Title: 'P2P Mesh, Auto-Discovery & Tailscale',
+        f1Desc: 'Zero-config LAN UDP Broadcast + automatic Tailscale & Direct IP discovery by persistent UUID, live online-only peers strip, and automatic Delta Sync.',
         f2Title: 'WhatsApp-Style Team Chat & Touch UX',
         f2Desc: 'Tight message bubbles, consecutive sender grouping, right-click & chevron dropdown menus, multi-speed voice notes, plus mobile Swipe-to-Reply & Long Press actions.',
         f3Title: 'Hidden Vault & Temp Shadow Sandbox',
@@ -485,15 +485,15 @@
         f4Title: 'Distributed Accounts & PC Roaming',
         f4Desc: 'Protect your PC account with a 4–6 digit PIN to roam into your exact chats & Vault ACLs from any LAN browser or workstation—even while your primary PC is offline.',
         f5Title: 'Isolated Trash & Live File Presence',
-        f5Desc: 'Live reader/editor presence badge with hover tooltip, active-edit delete/rename guards, and 30-day effective-ACL isolated trash with owner-only restore/purge.',
-        f6Title: 'Unified Web & Mobile Portal + QR Code',
-        f6Desc: 'Two-tab Quick Link & Universal Portal (?mode=portal) with adaptive mobile/desktop UI (2-column chats + 50/50 Split View), offline PIN recovery, and Zero Footprint.',
+        f5Desc: 'Live inline status chips & unclipped Portal hover tooltip showing active viewers/editors, active-edit delete/rename guards, and 30-day isolated trash.',
+        f6Title: 'Full Desktop Web, Mobile & Offline Setup',
+        f6Desc: 'Smart auto-routing to Full Desktop Web (/desktop/) on PC browsers or touch Mobile PWA, direct offline Windows .exe download from portal, and Zero Footprint.',
         installTitle: 'How to Install on Offline Windows PCs',
-        installSub: 'Download the universal installer once, copy it to a USB flash drive, and install on every LAN workstation.',
-        s1Title: 'Copy Setup.exe',
-        s1Desc: 'Transfer TwinSync-Pro-Setup-2.0.0.exe to any Windows 7 SP1 or Windows 10/11 PC (both 64-bit & 32-bit are bundled in one installer).',
-        s2Title: 'Next > Next > Install',
-        s2Desc: 'The wizard creates C:\\ProgramData\\TwinSync_Vault (hidden + user ACLs), configures the LAN firewall rule, and registers Windows Auto-Start.',
+        installSub: 'Install once on your first PC — teammates on the same router can download Setup.exe directly from the web portal or via USB.',
+        s1Title: 'Share or Copy Setup.exe',
+        s1Desc: 'Install TwinSync-Pro-Setup-2.1.0.exe on Windows 7 SP1 or Windows 10/11 (x64 + x86). It auto-caches in .installers so LAN peers can download it straight from the browser.',
+        s2Title: 'Auto Firewall & Network Guard',
+        s2Desc: 'The wizard configures C:\\ProgramData\\TwinSync_Vault, opens UDP 41234 and TCP 41235/41236 firewall rules, and detects Public networks to switch to Private in one click.',
         s3Title: 'Start & Roam Immediately',
         s3Desc: 'Set your display name, save your 12-char Master Recovery Key, and set an Account PIN in Settings to roam across the Unified Web & Mobile Portal.',
         win7NoteTitle: 'Note for bare Windows 7 installs without updates:',

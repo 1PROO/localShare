@@ -155,7 +155,7 @@ export default function TrashView({
   };
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
+    <div className="flex-1 min-w-0 h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
       {/* Header */}
       <header className="px-6 py-4 bg-white dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 shrink-0">
         <div className="flex items-center gap-3">
@@ -184,7 +184,7 @@ export default function TrashView({
       </header>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden p-6">
         {loading && items.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-3">
             <RefreshCw className="w-6 h-6 animate-spin text-indigo-500" strokeWidth={1.5} />

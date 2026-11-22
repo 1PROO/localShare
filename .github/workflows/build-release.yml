@@ -40,7 +40,7 @@ jobs:
 
       - name: Run JavaScript syntax checks
         run: |
-          for f in main.js preload.js database.js meshNetwork.js sandboxManager.js mobileServer.js src/mobile/app.js tests/integration.test.js; do
+          for f in main.js preload.js database.js meshNetwork.js sandboxManager.js mobileServer.js networkHealth.js src/mobile/app.js tests/integration.test.js; do
             node --check "$f"
           done
 
@@ -49,7 +49,7 @@ jobs:
           npm run generate-icons
           npm run build
 
-      - name: Run 17-suite P2P integration tests
+      - name: Run 22-suite P2P integration tests
         run: npm test
 
   build-and-release-windows:
@@ -144,8 +144,12 @@ jobs:
 
             ### مواصفات المثبت (Windows Installer)
             - **التوافق:** Windows 7 (SP1) و Windows 10 و Windows 11 (مثبّت موحد `x64` + `ia32`).
-            - **التركيب:** معالج `Next > Next > Install` يُنشئ مجلد المزامنة المخفي `C:\ProgramData\TwinSync_Vault` تلقائياً مع صلاحيات التشغيل والبدء التلقائي مع الويندوز (`Auto-Start`) وقواعد الجدار الناري للشبكة المحلية.
-            - **المزايا المضمنة:** `Electron v22.3.27`، قاعدة بيانات `better-sqlite3` المحلية، الحسابات الموزعة والتجوال بين الأجهزة (`PC Roaming`) برمز `PIN`، بوابة الويب والهاتف الموحدة (`?mode=portal`) وربط `QR Code` السريع، العزل المؤقت `Temp Shadow Sandbox`، الوراثة الهرمية للصلاحيات واستعادة كلمة المرور بدون إنترنت، وسلة المحذوفات المعزولة.
+            - **التركيب وتجهيز الشبكة:** معالج `Next > Next > Install` يُنشئ مجلد المزامنة المخفي `C:\ProgramData\TwinSync_Vault`، يحتفظ بنسخة مخفية من المثبّت في `.installers` لتوزيعها أوفلاين عبر الشبكة المحلية، ويُضيف قواعد الجدار الناري (`UDP 41234`, `TCP 41235`, `TCP 41236`) والبدء التلقائي مع الويندوز (`Auto-Start`).
+            - **المزايا المضمنة في ${{ steps.meta.outputs.tag }}:**
+              - **نسخة سطح المكتب الكاملة على الويب (`/desktop/`):** توجيه تلقائي حسب نوع الجهاز بواجهة React الكاملة وبصمة صفرية (`Zero Footprint`)، وتكامل تام لمدير الملفات وسلة المحذوفات عبر المتصفح.
+              - **التوزيع الأوفلاين عبر الراوتر:** تحميل وتثبيت ملف `.exe` مباشرة من صفحة تسجيل الدخول أو الشريط الجانبي في الويب بدون إنترنت.
+              - **اكتشاف Tailscale والاتصال المباشر عبر IP (`Direct Peer Connect`):** ربط الأجهزة عبر الشبكات المختلفة تلقائياً أو يدوياً، مع إظهار المتصلين حالياً فقط في شريط الأقران السريع.
+              - **فحص وإصلاح الشبكة وجدار الحماية تلقائياً (`Windows Network Guard`):** تنبيه وإصلاح بضغطة زر لتحويل شبكات `Public` إلى `Private` وفتح المنافذ المطلوبة، إلى جانب تلميح المتواجدين الذكي (`Portal Tooltip`) في مدير الملفات وواجهة شات بأسلوب WhatsApp.
 
             ### الملفات المرفقة (Assets)
             - `TwinSync-Pro-Setup-${{ steps.meta.outputs.version }}.exe` — ملف التثبيت الكامل لويندوز.

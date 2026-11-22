@@ -29,6 +29,23 @@ const {
   sanitizeNodeForPublic
 } = require('./sandboxManager');
 
+const { findCachedInstaller } = require('./networkHealth');
+const pkgVersion = require('./package.json').version || '2.0.0';
+
+function sendCodedVaultError(res, err) {
+  let status = 400;
+  if (err && (err.code === 'LOCKED' || err.code === 'FORBIDDEN')) status = 403;
+  else if (err && err.code === 'NOT_FOUND') status = 404;
+  else if (err && (err.code === 'ALREADY_EXISTS' || err.code === 'FILE_LOCKED_LIVE_EDIT')) status = 409;
+  res.status(status).json({
+    ok: false,
+    code: err?.code || 'ERROR',
+    error: err?.message || 'Operation failed',
+    blockingAncestor: err?.blockingAncestor || null,
+    editors: err?.editors
+  });
+}
+
 function timingSafeCompare(a, b) {
   const strA = String(a || '');
   const strB = String(b || '');
@@ -312,9 +329,41 @@ class MobileServer extends EventEmitter {
     return this.db.getPeer(uuid);
   }
 
+  _buildPeersListForActor(actorUuid) {
+    const hostId = this.db.getIdentity();
+    const rawPeers = this.db.getPeers({ includeSelf: true }) || [];
+    const peers = [];
+    let hostIncluded = false;
+    for (const p of rawPeers) {
+      if (p.uuid === actorUuid) continue;
+      if (!(p.display_name || p.name)) continue;
+      if (hostId && p.uuid === hostId.uuid) hostIncluded = true;
+      const isOnline =
+        Boolean(hostId && p.uuid === hostId.uuid) || this._hasLivePeerPresence(p.uuid);
+      peers.push(sanitizePeer(p, isOnline));
+    }
+
+    if (hostId && actorUuid !== hostId.uuid && !hostIncluded) {
+      peers.unshift(
+        sanitizePeer(
+          {
+            ...hostId,
+            device_type: 'desktop',
+            status: 'online',
+            last_seen: Date.now()
+          },
+          true
+        )
+      );
+    }
+    return peers;
+  }
+
   _buildApp() {
     const app = express();
     const mobileRoot = path.join(__dirname, 'src', 'mobile');
+    const distDir = path.join(__dirname, 'dist-renderer');
+    const distIndexPath = path.join(distDir, 'index.html');
 
     app.use((req, res, next) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -328,8 +377,30 @@ class MobileServer extends EventEmitter {
     app.use(express.raw({ type: 'multipart/form-data', limit: '100mb' }));
     app.use(express.raw({ type: 'application/octet-stream', limit: '100mb' }));
 
+    // Static Desktop Web Bundle & Smart Routing (/desktop + /)
+    app.use(
+      '/desktop',
+      (req, res, next) => {
+        const cleanPath = String(req.originalUrl || '').split('?')[0];
+        if (cleanPath === '/desktop') {
+          const idx = String(req.originalUrl || '').indexOf('?');
+          return res.redirect(302, '/desktop/' + (idx !== -1 ? req.originalUrl.slice(idx) : ''));
+        }
+        next();
+      },
+      express.static(distDir)
+    );
+
     // Static Mobile & Web Portal PWA Shell
-    app.get('/', (_req, res) => {
+    app.get('/', (req, res) => {
+      const ui = String(req.query.ui || '').toLowerCase();
+      const ua = String(req.headers['user-agent'] || '');
+      const isMobileUa = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua);
+      if ((ui === 'desktop' || (ui !== 'mobile' && !isMobileUa)) && fs.existsSync(distIndexPath)) {
+        const idx = req.url.indexOf('?');
+        const qs = idx !== -1 ? req.url.slice(idx) : '';
+        return res.redirect(302, '/desktop/' + qs);
+      }
       res.sendFile(path.join(mobileRoot, 'index.html'));
     });
     app.get('/index.html', (_req, res) => {
@@ -363,8 +434,51 @@ class MobileServer extends EventEmitter {
     });
 
     // =========================================================================
-    // Public Auth Routes (NO token required)
+    // Public Auth & Offline Installer Routes (NO token required)
     // =========================================================================
+
+    app.get('/api/installer/info', (_req, res) => {
+      try {
+        const info = findCachedInstaller(this.vaultPaths, pkgVersion);
+        res.json({
+          ok: true,
+          available: Boolean(info?.available),
+          fileName: info?.fileName || '',
+          size: Number(info?.size) || 0,
+          version: info?.version || pkgVersion
+        });
+      } catch (_) {
+        res.json({ ok: true, available: false, fileName: '', size: 0, version: pkgVersion });
+      }
+    });
+
+    app.get('/api/installer/download', (_req, res) => {
+      try {
+        const info = findCachedInstaller(this.vaultPaths, pkgVersion);
+        if (!info?.available || !info.filePath || !fs.existsSync(info.filePath)) {
+          return res.status(404).json({ ok: false, error: 'Installer not found' });
+        }
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Length', String(info.size));
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename*=UTF-8''${encodeURIComponent(info.fileName)}`
+        );
+        const stream = fs.createReadStream(info.filePath);
+        stream.on('error', () => {
+          if (!res.headersSent) {
+            res.status(500).json({ ok: false, error: 'Failed to stream installer' });
+          } else {
+            res.end();
+          }
+        });
+        stream.pipe(res);
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(500).json({ ok: false, error: err.message });
+        }
+      }
+    });
 
     app.get('/api/auth/accounts', (_req, res) => {
       try {
@@ -607,39 +721,13 @@ class MobileServer extends EventEmitter {
       }
     });
 
-    // Bootstrap
+    // Bootstrap & Peers
     app.get('/api/bootstrap', (req, res) => {
       try {
         const actorUuid = req.session.uuid;
         const hostId = this.db.getIdentity();
         const actorRecord = this._getActorRecord(actorUuid) || hostId;
-
-        const rawPeers = this.db.getPeers({ includeSelf: true }) || [];
-        const peers = [];
-        let hostIncluded = false;
-        for (const p of rawPeers) {
-          if (p.uuid === actorUuid) continue;
-          if (!(p.display_name || p.name)) continue;
-          if (hostId && p.uuid === hostId.uuid) hostIncluded = true;
-          const isOnline =
-            Boolean(hostId && p.uuid === hostId.uuid) || this._hasLivePeerPresence(p.uuid);
-          peers.push(sanitizePeer(p, isOnline));
-        }
-
-        if (hostId && actorUuid !== hostId.uuid && !hostIncluded) {
-          peers.unshift(
-            sanitizePeer(
-              {
-                ...hostId,
-                device_type: 'desktop',
-                status: 'online',
-                last_seen: Date.now()
-              },
-              true
-            )
-          );
-        }
-
+        const peers = this._buildPeersListForActor(actorUuid);
         const conversations = actorUuid ? (this.db.getConversations(actorUuid) || []) : [];
         const settings = typeof this.db.getAllSettings === 'function' ? this.db.getAllSettings() : {};
         const presenceMap =
@@ -656,6 +744,15 @@ class MobileServer extends EventEmitter {
           settings,
           presenceMap
         });
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    app.get('/api/peers', (req, res) => {
+      try {
+        const peers = this._buildPeersListForActor(req.session.uuid);
+        res.json({ ok: true, peers });
       } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
       }
@@ -927,32 +1024,57 @@ class MobileServer extends EventEmitter {
           return res.status(400).json({ ok: false, error: 'No file uploaded' });
         }
 
-        const f = uploadedFiles[0];
-        const att = await this.sandboxManager.saveBufferAsChatBlob({
-          buffer: f.buffer,
-          fileName: f.fileName,
-          mime: f.mime
-        });
-        if (isVoice || String(att.mime).startsWith('audio/')) {
-          att.durationMs = durationMs;
+        const atts = [];
+        for (const f of uploadedFiles) {
+          const att = await this.sandboxManager.saveBufferAsChatBlob({
+            buffer: f.buffer,
+            fileName: f.fileName,
+            mime: f.mime
+          });
+          if (isVoice || String(att.mime).startsWith('audio/')) {
+            att.durationMs = durationMs;
+          }
+          atts.push(att);
         }
 
         let message = null;
+        const sentMessages = [];
         if (conversationId && shouldSend) {
-          const msgType = isVoice
-            ? 'voice'
-            : (String(att.mime).startsWith('image/') ? 'image' : 'file');
-          message = await this.meshNetwork.sendChatMessage({
-            conversationId,
-            type: msgType,
-            body: caption,
-            attachment: att,
-            replyToId: replyToId || null,
-            actorUuid
-          });
+          if (isVoice) {
+            message = await this.meshNetwork.sendChatMessage({
+              conversationId,
+              type: 'voice',
+              body: caption,
+              attachment: atts[0],
+              replyToId: replyToId || null,
+              actorUuid
+            });
+            sentMessages.push(message);
+          } else {
+            for (let i = 0; i < atts.length; i++) {
+              const att = atts[i];
+              const msgType = String(att.mime || '').startsWith('image/') ? 'image' : 'file';
+              const sent = await this.meshNetwork.sendChatMessage({
+                conversationId,
+                type: msgType,
+                body: i === 0 ? caption : '',
+                attachment: att,
+                replyToId: i === 0 ? (replyToId || null) : null,
+                actorUuid
+              });
+              sentMessages.push(sent);
+            }
+            message = sentMessages[0] || null;
+          }
         }
 
-        res.json({ ok: true, attachment: att, message });
+        res.json({
+          ok: true,
+          attachment: atts[0],
+          attachments: atts,
+          message,
+          messages: sentMessages
+        });
       } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
       }
@@ -1012,6 +1134,113 @@ class MobileServer extends EventEmitter {
         res.json(result);
       } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    app.get('/api/chat/check-vault-share', (req, res) => {
+      try {
+        const actorUuid = req.session.uuid;
+        const relPath = normalizeRelPath(req.query.path || '');
+        const acl = this.meshNetwork.computeEffectiveAcl(
+          relPath,
+          actorUuid,
+          req.session.unlockedSet
+        );
+        res.json({
+          ok: true,
+          isProtected: acl.isProtected,
+          canRead: acl.canRead,
+          canWrite: acl.canWrite,
+          role: acl.role,
+          blockingAncestor: acl.blockingAncestor
+        });
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err.message });
+      }
+    });
+
+    app.post('/api/chat/share-vault', async (req, res) => {
+      try {
+        const actorUuid = req.session.uuid;
+        const {
+          relPath,
+          conversationId,
+          mode = 'deeplink',
+          caption = '',
+          replyToId = null
+        } = req.body || {};
+
+        if (!conversationId) {
+          return res.status(400).json({ ok: false, error: 'conversationId required' });
+        }
+        if (!this.db.isConversationMember(conversationId, actorUuid)) {
+          return res.status(403).json({
+            ok: false,
+            code: 'FORBIDDEN',
+            error: 'Not a member of this conversation'
+          });
+        }
+        const normRel = normalizeRelPath(relPath || '');
+        if (!normRel) {
+          return res.status(400).json({ ok: false, error: 'relPath required' });
+        }
+
+        const acl = this.meshNetwork.computeEffectiveAcl(
+          normRel,
+          actorUuid,
+          req.session.unlockedSet
+        );
+        if (!acl.canRead) {
+          return res.status(403).json({
+            ok: false,
+            code: 'LOCKED',
+            blockingAncestor: acl.blockingAncestor
+          });
+        }
+
+        const isCopyMode = mode === 'copy' || mode === 'independent_copy';
+        if (isCopyMode) {
+          const att = await this.sandboxManager.prepareIndependentVaultCopyForChat(
+            normRel,
+            actorUuid,
+            req.session.unlockedSet
+          );
+          if (!att || !att.ok) {
+            const st = att?.code === 'LOCKED' || att?.code === 'FORBIDDEN'
+              ? 403
+              : (att?.code === 'NOT_FOUND' ? 404 : 400);
+            return res.status(st).json(att || { ok: false, error: 'Failed to prepare copy' });
+          }
+          const msgType = att.isFolder
+            ? 'folder'
+            : (String(att.mime || '').startsWith('image/') ? 'image' : 'file');
+          const message = await this.meshNetwork.sendChatMessage({
+            conversationId,
+            type: msgType,
+            body: caption || '',
+            attachment: att,
+            replyToId: replyToId || null,
+            actorUuid
+          });
+          return res.json({ ok: true, message });
+        }
+
+        const node = this.db.getVaultNode(normRel);
+        if (!node) {
+          return res.status(404).json({ ok: false, code: 'NOT_FOUND', error: 'Vault item not found' });
+        }
+        const message = await this.meshNetwork.sendChatMessage({
+          conversationId,
+          type: 'vault_link',
+          body: caption || '',
+          vault_link_path: node.rel_path,
+          vault_link_is_dir: Boolean(node.is_dir),
+          replyToId: replyToId || null,
+          actorUuid
+        });
+        res.json({ ok: true, message });
+      } catch (err) {
+        sendCodedVaultError(res, err);
       }
     });
 
@@ -1261,6 +1490,173 @@ class MobileServer extends EventEmitter {
       }
     });
 
+    app.post('/api/vault/rename', (req, res) => {
+      try {
+        const actorUuid = req.session.uuid;
+        const { relPath, newName } = req.body || {};
+        const node = this.meshNetwork.renameNode(
+          relPath || '',
+          String(newName || ''),
+          actorUuid,
+          req.session.unlockedSet
+        );
+        res.json({ ok: true, node: sanitizeNodeForPublic(node) });
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    app.post('/api/vault/move-or-copy', (req, res) => {
+      try {
+        const actorUuid = req.session.uuid;
+        const {
+          op,
+          sourcePaths,
+          targetParentPath = '',
+          conflictStrategy = 'prompt'
+        } = req.body || {};
+        const result = this.meshNetwork.moveOrCopyNode(
+          op,
+          sourcePaths,
+          targetParentPath || '',
+          conflictStrategy || 'prompt',
+          actorUuid,
+          req.session.unlockedSet
+        );
+        if (result && result.conflict) {
+          return res.status(409).json(result);
+        }
+        res.json(result);
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    app.post('/api/vault/delete', (req, res) => {
+      try {
+        const actorUuid = req.session.uuid;
+        const { relPath } = req.body || {};
+        const trashItem = this.meshNetwork.deleteToTrash(
+          relPath || '',
+          actorUuid,
+          req.session.unlockedSet
+        );
+        res.json({ ok: true, trashItem });
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    app.get('/api/vault/properties', (req, res) => {
+      try {
+        const actorUuid = req.session.uuid;
+        const norm = normalizeRelPath(req.query.path || '');
+        const acl = this.meshNetwork.computeEffectiveAcl(
+          norm,
+          actorUuid,
+          req.session.unlockedSet
+        );
+        if (!acl.canRead) {
+          return res.status(403).json({
+            ok: false,
+            code: 'LOCKED',
+            blockingAncestor: acl.blockingAncestor
+          });
+        }
+        const node = this.db.getVaultNode(norm);
+        if (!node) {
+          return res.status(404).json({ ok: false, code: 'NOT_FOUND', error: 'Item not found' });
+        }
+        const hostId = this.db.getIdentity();
+        const owner = node.owner_uuid === hostId?.uuid
+          ? hostId
+          : this.db.getPeer(node.owner_uuid);
+        const auditLogs = this.db.getAuditLogs({ targetPath: norm, limit: 50 });
+        res.json({
+          ok: true,
+          node: sanitizeNodeForPublic(node),
+          ownerName: owner?.display_name || owner?.name || node.owner_name || '',
+          effectiveAcl: acl,
+          auditLogs
+        });
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    app.put('/api/vault/permissions', (req, res) => {
+      try {
+        const actorUuid = req.session.uuid;
+        const { relPath, ...payload } = req.body || {};
+        const node = this.meshNetwork.updateFolderPermissions(
+          relPath || '',
+          payload || {},
+          actorUuid
+        );
+        res.json({ ok: true, node: sanitizeNodeForPublic(node) });
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    app.get('/api/vault/recovery-info', (req, res) => {
+      try {
+        const relPath = normalizeRelPath(req.query.path || '');
+        const info = this.meshNetwork.getFolderRecoveryInfo(relPath);
+        res.json({ ok: true, ...info });
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    app.post('/api/vault/recover-password', (req, res) => {
+      try {
+        const { relPath, ...payload } = req.body || {};
+        const result = this.meshNetwork.recoverFolderPassword(relPath || '', payload || {});
+        if (!result || !result.ok) {
+          return res.status(403).json(result || { ok: false, error: 'INVALID_CREDENTIALS' });
+        }
+        res.json(result);
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    // Trash Routes (strictly scoped to req.session.uuid & req.session.unlockedSet)
+    app.get('/api/trash', (req, res) => {
+      try {
+        const items = this.meshNetwork.listTrash(req.session.uuid, req.session.unlockedSet);
+        res.json({ ok: true, items });
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    app.post('/api/trash/restore', (req, res) => {
+      try {
+        const { trashId } = req.body || {};
+        if (!trashId) {
+          return res.status(400).json({ ok: false, error: 'trashId required' });
+        }
+        const result = this.meshNetwork.restoreFromTrash(String(trashId), req.session.uuid);
+        res.json(result);
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
+    app.delete('/api/trash/:trashId', (req, res) => {
+      try {
+        const result = this.meshNetwork.deleteTrashForever(
+          String(req.params.trashId),
+          req.session.uuid
+        );
+        res.json(result);
+      } catch (err) {
+        sendCodedVaultError(res, err);
+      }
+    });
+
     return app;
   }
 
@@ -1337,6 +1733,8 @@ class MobileServer extends EventEmitter {
       'chat:reaction',
       'conversations:changed',
       'vault:changed',
+      'vault:remote-updated',
+      'trash:changed',
       'peers:changed',
       'presence:changed'
     ];

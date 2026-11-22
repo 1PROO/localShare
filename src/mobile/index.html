@@ -16,6 +16,7 @@
       <div class="portal-auth-topbar">
         <span id="portal-zero-badge" class="zero-badge"></span>
         <div class="top-actions">
+          <button id="portal-btn-desktop-ui" class="icon-btn btn-desktop-ui" type="button"></button>
           <button id="portal-btn-lang" class="icon-btn" type="button" title="Language">EN</button>
           <button id="portal-btn-theme" class="icon-btn" type="button" title="Theme">🌙</button>
         </div>
@@ -57,6 +58,15 @@
         </div>
 
         <div id="portal-expired-banner" class="alert-banner hidden"></div>
+
+        <!-- Offline Windows Installer Banner (when cached .exe available) -->
+        <div id="portal-installer-banner" class="installer-banner hidden">
+          <div class="installer-banner-info">
+            <div id="portal-installer-title" class="installer-banner-title"></div>
+            <div id="portal-installer-meta" class="installer-banner-meta"></div>
+          </div>
+          <a id="portal-installer-dl" href="/api/installer/download" download class="btn btn-primary btn-sm"></a>
+        </div>
 
         <!-- 2 Auth Tabs -->
         <div class="auth-tabs" role="tablist">
@@ -218,6 +228,10 @@
         </div>
         <div class="top-actions">
           <div id="top-account-badge" class="account-pill hidden"></div>
+          <button id="btn-desktop-ui" class="icon-btn btn-desktop-ui" type="button" title="Full Desktop UI">
+            <span>🖥️</span>
+            <span id="btn-desktop-ui-label" class="desktop-ui-label"></span>
+          </button>
           <button id="btn-switch-account-top" class="icon-btn btn-switch-account" type="button" title="Switch Account">
             <span>⇄</span>
             <span id="btn-switch-top-label" class="switch-label"></span>
@@ -323,7 +337,7 @@
                 <p id="thread-empty-desc" class="muted"></p>
               </div>
 
-              <div id="thread-active-content" class="thread-active-content hidden">
+              <div id="thread-active-content" class="thread-active-content">
                 <div class="thread-header">
                   <button id="btn-back-chats" class="icon-btn back-chats-btn" type="button">←</button>
                   <div id="thread-avatar" class="avatar sm"></div>

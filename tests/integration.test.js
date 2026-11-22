@@ -10,9 +10,15 @@ const assert = require('assert');
 const WebSocket = require('ws');
 
 const { TwinSyncDatabase } = require('../database');
-const { MeshNetwork } = require('../meshNetwork');
+const { MeshNetwork, parseManualPeerEntry } = require('../meshNetwork');
 const { SandboxManager } = require('../sandboxManager');
 const { MobileServer } = require('../mobileServer');
+const {
+  checkWindowsNetworkHealth,
+  findCachedInstaller,
+  importInstallerFile,
+  formatRuleList,
+} = require('../networkHealth');
 
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RECOVERY_KEY_RE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{4}$/;
@@ -57,6 +63,7 @@ function createTempVault(tag) {
     chatBlobsDir: path.join(vaultRoot, '.chat_blobs'),
     metaDir: path.join(vaultRoot, '.meta'),
     stagingDir: path.join(vaultRoot, '.meta', 'staging'),
+    installersDir: path.join(vaultRoot, '.installers'),
   };
   for (const dir of Object.values(vaultPaths)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -99,12 +106,13 @@ function httpRequest(port, method, urlPath, { token = null, body = null, headers
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
-          const raw = Buffer.concat(chunks).toString('utf8');
+          const rawBuf = Buffer.concat(chunks);
+          const raw = rawBuf.toString('utf8');
           let data = raw;
           try {
             data = JSON.parse(raw);
           } catch (_) {}
-          resolve({ status: res.statusCode, headers: res.headers, data, raw });
+          resolve({ status: res.statusCode, headers: res.headers, data, raw, rawBuf });
         });
       }
     );
@@ -1636,6 +1644,502 @@ async function runTests() {
 
       await httpRequest(mobilePortA, 'POST', '/api/auth/logout', { token: tok1 });
       await httpRequest(mobilePortB, 'POST', '/api/auth/logout', { token: tok2 });
+    });
+
+    // -------------------------------------------------------------------------
+    // 18. Cross-Subnet Direct IP / Tailscale Peer Connect without UDP Broadcast
+    // -------------------------------------------------------------------------
+    await runStep('18. Cross-Subnet Direct IP Peer Connect (connectManualPeer without UDP broadcast)', async () => {
+      const parsedPlain = parseManualPeerEntry('100.98.94.55');
+      assert.deepStrictEqual(parsedPlain, { host: '100.98.94.55', wsPort: 41235, udpPort: 41234 });
+      const parsedPortalUrl = parseManualPeerEntry('http://100.98.94.55:41236/?mode=portal');
+      assert.deepStrictEqual(parsedPortalUrl, { host: '100.98.94.55', wsPort: 41235, udpPort: 41234 });
+      const parsedCustomPort = parseManualPeerEntry('192.168.50.10:49000');
+      assert.deepStrictEqual(parsedCustomPort, { host: '192.168.50.10', wsPort: 49000, udpPort: 41234 });
+      assert.strictEqual(parseManualPeerEntry('not a valid host!'), null);
+
+      const isolatedVaultA = createTempVault('directA');
+      const isolatedVaultB = createTempVault('directB');
+      const isolatedDbA = new TwinSyncDatabase(path.join(isolatedVaultA.metaDir, 'twinsync.db'));
+      const isolatedDbB = new TwinSyncDatabase(path.join(isolatedVaultB.metaDir, 'twinsync.db'));
+      let isolatedMeshA = null;
+      let isolatedMeshB = null;
+
+      try {
+        const directIdA = isolatedDbA.completeOnboarding({
+          displayName: 'Ubuntu-Tailnet',
+          securityQuestion: 'Q1',
+          securityAnswer: 'A1',
+        });
+        const directIdB = isolatedDbB.completeOnboarding({
+          displayName: 'Windows-Tailnet',
+          securityQuestion: 'Q2',
+          securityAnswer: 'A2',
+        });
+
+        // Disable UDP broadcast & local tailscale polling to simulate separated networks
+        isolatedMeshA = new MeshNetwork({
+          db: isolatedDbA,
+          vaultPaths: isolatedVaultA,
+          udpPort: 0,
+          wsPort: 0,
+          broadcastAddresses: [],
+          enableTailscaleDiscovery: false,
+          discoveryIntervalMs: 500,
+        });
+        isolatedMeshB = new MeshNetwork({
+          db: isolatedDbB,
+          vaultPaths: isolatedVaultB,
+          udpPort: 0,
+          wsPort: 0,
+          broadcastAddresses: [],
+          enableTailscaleDiscovery: false,
+          discoveryIntervalMs: 500,
+        });
+
+        await isolatedMeshA.start();
+        await isolatedMeshB.start();
+        await sleep(250);
+
+        // Neither peer should be discovered without UDP broadcast or direct connect
+        assert.strictEqual(isolatedMeshA.getStatus().onlineCount, 0);
+        assert.strictEqual(isolatedMeshB.getStatus().onlineCount, 0);
+
+        const connectRes = await isolatedMeshA.connectManualPeer(`127.0.0.1:${isolatedMeshB.wsPort}`);
+        assert.strictEqual(connectRes.ok, true);
+        assert.strictEqual(connectRes.connected, true);
+        assert.strictEqual(connectRes.manualPeers.length, 1);
+
+        await waitFor(
+          () =>
+            isolatedDbA.getPeer(directIdB.uuid)?.status === 'online' &&
+            isolatedDbB.getPeer(directIdA.uuid)?.status === 'online',
+          { desc: 'Both isolated peers online via direct WS connection' }
+        );
+
+        // Verify persisted setting & chat sync over direct link
+        const savedManual = isolatedDbA.getSetting('manual_peers', []);
+        assert.strictEqual(savedManual.length, 1);
+        assert.strictEqual(savedManual[0].host, '127.0.0.1');
+        assert.strictEqual(savedManual[0].wsPort, isolatedMeshB.wsPort);
+
+        const dm = isolatedDbA.ensureDmConversation(directIdA.uuid, directIdB.uuid);
+        const sentMsg = isolatedMeshA.sendChatMessage({
+          conversationId: dm.id,
+          type: 'text',
+          body: 'Tailscale direct ping!',
+        });
+        await waitFor(() => isolatedDbB.getMessageById(sentMsg.id), {
+          desc: 'Chat message synced across direct peer link',
+        });
+
+        const remRes = isolatedMeshA.removeManualPeer(`127.0.0.1:${isolatedMeshB.wsPort}`);
+        assert.strictEqual(remRes.ok, true);
+        assert.strictEqual(remRes.manualPeers.length, 0);
+      } finally {
+        try { if (isolatedMeshA) await isolatedMeshA.stop(); } catch (_) {}
+        try { if (isolatedMeshB) await isolatedMeshB.stop(); } catch (_) {}
+        try { isolatedDbA.close(); } catch (_) {}
+        try { isolatedDbB.close(); } catch (_) {}
+        try { fs.rmSync(isolatedVaultA.vaultRoot, { recursive: true, force: true }); } catch (_) {}
+        try { fs.rmSync(isolatedVaultB.vaultRoot, { recursive: true, force: true }); } catch (_) {}
+      }
+    });
+
+    // -------------------------------------------------------------------------
+    // 19. Mobile Web Portal Thread Visibility Integrity
+    // -------------------------------------------------------------------------
+    await runStep('19. Mobile Web Portal Thread Visibility Integrity (#thread-active-content)', async () => {
+      const mobileHtml = fs.readFileSync(path.join(__dirname, '..', 'src', 'mobile', 'index.html'), 'utf8');
+      const mobileCss = fs.readFileSync(path.join(__dirname, '..', 'src', 'mobile', 'styles.css'), 'utf8');
+      const mobileJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'mobile', 'app.js'), 'utf8');
+
+      const threadActiveTagMatch = /<div[^>]*id="thread-active-content"[^>]*>/i.exec(mobileHtml);
+      assert(threadActiveTagMatch, 'Expected #thread-active-content in src/mobile/index.html');
+      assert(
+        !/class="[^"]*\bhidden\b[^"]*"/i.test(threadActiveTagMatch[0]),
+        '#thread-active-content must not carry hardcoded .hidden class (it blanks mobile chat view)'
+      );
+      assert(
+        mobileCss.includes('#tab-chats.has-active-conv .thread-active-content'),
+        'styles.css must display .thread-active-content when .has-active-conv is active on mobile'
+      );
+      assert(
+        mobileJs.includes("threadActiveEl.classList.remove('hidden')"),
+        'app.js openConversation must ensure .hidden is cleared from #thread-active-content'
+      );
+    });
+
+    // -------------------------------------------------------------------------
+    // 20. Isolated connectManualPeer & _probeDirectEndpoint emit ZERO UDP packets
+    // -------------------------------------------------------------------------
+    await runStep('20. Isolated connectManualPeer emits ZERO UDP discovery packets to port 41234', async () => {
+      const isoVaultA = createTempVault('isoUdpA');
+      const isoVaultB = createTempVault('isoUdpB');
+      const isoDbA = new TwinSyncDatabase(path.join(isoVaultA.metaDir, 'twinsync.db'));
+      const isoDbB = new TwinSyncDatabase(path.join(isoVaultB.metaDir, 'twinsync.db'));
+      let isoMeshA = null;
+      let isoMeshB = null;
+      let spySock = null;
+
+      try {
+        const isoIdA = isoDbA.completeOnboarding({
+          displayName: 'Isolated-TCP-A',
+          securityQuestion: 'Q1',
+          securityAnswer: 'A1',
+        });
+        const isoIdB = isoDbB.completeOnboarding({
+          displayName: 'Isolated-TCP-B',
+          securityQuestion: 'Q2',
+          securityAnswer: 'A2',
+        });
+
+        spySock = dgram.createSocket('udp4');
+        const spyMessages = [];
+        spySock.on('message', (msg, rinfo) => {
+          spyMessages.push({ msg: msg.toString('utf8'), rinfo });
+        });
+        const spyPort = await new Promise((resolve, reject) => {
+          spySock.once('error', reject);
+          spySock.bind(0, '127.0.0.1', () => resolve(spySock.address().port));
+        });
+
+        isoMeshA = new MeshNetwork({
+          db: isoDbA,
+          vaultPaths: isoVaultA,
+          udpPort: 0,
+          wsPort: 0,
+          broadcastAddresses: [],
+          enableTailscaleDiscovery: false,
+          discoveryIntervalMs: 500,
+        });
+        isoMeshB = new MeshNetwork({
+          db: isoDbB,
+          vaultPaths: isoVaultB,
+          udpPort: 0,
+          wsPort: 0,
+          broadcastAddresses: [],
+          enableTailscaleDiscovery: false,
+          discoveryIntervalMs: 500,
+        });
+
+        await isoMeshA.start();
+        await isoMeshB.start();
+
+        const udpSendCalls = [];
+        const origUdpSend = isoMeshA.udpSocket.send.bind(isoMeshA.udpSocket);
+        isoMeshA.udpSocket.send = (...args) => {
+          udpSendCalls.push({ port: args[1], host: args[2] });
+          return origUdpSend(...args);
+        };
+
+        // Direct probe targeting spyPort must NOT emit UDP when isolated
+        const probed = isoMeshA._probeDirectEndpoint('127.0.0.1', isoMeshB.wsPort, {
+          force: true,
+          udpPort: spyPort,
+        });
+        assert.strictEqual(probed, true);
+
+        await waitFor(
+          () =>
+            isoDbA.getPeer(isoIdB.uuid)?.status === 'online' &&
+            isoDbB.getPeer(isoIdA.uuid)?.status === 'online',
+          { desc: 'Isolated meshes connected via TCP/WS without UDP' }
+        );
+
+        // Also call connectManualPeer (defaults to udpPort 41234) and verify 0 UDP packets sent
+        const manualRes = await isoMeshA.connectManualPeer(`127.0.0.1:${isoMeshB.wsPort}`);
+        assert.strictEqual(manualRes.ok, true);
+        assert.strictEqual(manualRes.connected, true);
+
+        await sleep(150);
+        assert.strictEqual(
+          udpSendCalls.length,
+          0,
+          `Isolated mesh must not send UDP packets (saw: ${JSON.stringify(udpSendCalls)})`
+        );
+        assert.strictEqual(spyMessages.length, 0, 'UDP spy socket must receive 0 packets');
+      } finally {
+        try { if (spySock) spySock.close(); } catch (_) {}
+        try { if (isoMeshA) await isoMeshA.stop(); } catch (_) {}
+        try { if (isoMeshB) await isoMeshB.stop(); } catch (_) {}
+        try { isoDbA.close(); } catch (_) {}
+        try { isoDbB.close(); } catch (_) {}
+        try { fs.rmSync(isoVaultA.vaultRoot, { recursive: true, force: true }); } catch (_) {}
+        try { fs.rmSync(isoVaultB.vaultRoot, { recursive: true, force: true }); } catch (_) {}
+      }
+    });
+
+    // -------------------------------------------------------------------------
+    // 21. Full Desktop Web Portal Parity & Offline Installer Routes
+    // -------------------------------------------------------------------------
+    await runStep('21. Desktop Web Portal Parity, Smart Routing & Offline Installer Routes', async () => {
+      const distIndexPath = path.join(__dirname, '..', 'dist-renderer', 'index.html');
+      const hasBuiltRenderer = fs.existsSync(distIndexPath);
+
+      // Smart Routing assertions
+      if (hasBuiltRenderer) {
+        const deskUaRes = await httpRequest(mobilePortA, 'GET', '/?mode=portal', {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        });
+        assert.strictEqual(deskUaRes.status, 302);
+        assert.strictEqual(deskUaRes.headers.location, '/desktop/?mode=portal');
+
+        const uiMobRes = await httpRequest(mobilePortA, 'GET', '/?mode=portal&ui=mobile', {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        });
+        assert.strictEqual(uiMobRes.status, 200);
+        assert(uiMobRes.raw.includes('portal-auth-view'));
+
+        const deskNoSlash = await httpRequest(mobilePortA, 'GET', '/desktop?mode=portal');
+        assert.strictEqual(deskNoSlash.status, 302);
+        assert.strictEqual(deskNoSlash.headers.location, '/desktop/?mode=portal');
+
+        const deskStatic = await httpRequest(mobilePortA, 'GET', '/desktop/?mode=portal');
+        assert.strictEqual(deskStatic.status, 200);
+        assert(deskStatic.raw.includes('TwinSync Pro'));
+      }
+
+      const mobUaRes = await httpRequest(mobilePortA, 'GET', '/?mode=portal', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile' },
+      });
+      assert.strictEqual(mobUaRes.status, 200);
+      assert(mobUaRes.raw.includes('portal-auth-view'));
+
+      // Offline Installer Info & Download streaming with cleanup
+      const fixtureInstallerSrc = path.join(tempWorkDir, 'TwinSync-Pro-Setup-Fixture.exe');
+      const fixturePayload = Buffer.from('MZ_TWINSYNC_PRO_OFFLINE_INSTALLER_FIXTURE_BYTES');
+      fs.writeFileSync(fixtureInstallerSrc, fixturePayload);
+
+      try {
+        const imported = importInstallerFile(fixtureInstallerSrc, vaultA, '2.0.0');
+        assert.strictEqual(imported.available, true);
+
+        const instInfoRes = await httpRequest(mobilePortA, 'GET', '/api/installer/info');
+        assert.strictEqual(instInfoRes.status, 200);
+        assert.strictEqual(instInfoRes.data.ok, true);
+        assert.strictEqual(instInfoRes.data.available, true);
+        assert.strictEqual(instInfoRes.data.fileName, 'TwinSync-Pro-Setup-Fixture.exe');
+        assert.strictEqual(instInfoRes.data.size, fixturePayload.length);
+
+        const instDlRes = await httpRequest(mobilePortA, 'GET', '/api/installer/download');
+        assert.strictEqual(instDlRes.status, 200);
+        assert.strictEqual(instDlRes.headers['content-type'], 'application/octet-stream');
+        assert(
+          String(instDlRes.headers['content-disposition'] || '').includes('TwinSync-Pro-Setup-Fixture.exe'),
+          'Download header must include fixture filename'
+        );
+        assert(instDlRes.rawBuf.equals(fixturePayload), 'Downloaded installer bytes must match fixture');
+      } finally {
+        try { fs.rmSync(fixtureInstallerSrc, { force: true }); } catch (_) {}
+        try {
+          if (fs.existsSync(vaultA.installersDir)) {
+            for (const f of fs.readdirSync(vaultA.installersDir)) {
+              fs.rmSync(path.join(vaultA.installersDir, f), { recursive: true, force: true });
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Desktop Web Parity Authenticated REST APIs
+      const tokA = mobileA.sessionToken;
+      const peersRes = await httpRequest(mobilePortA, 'GET', '/api/peers', { token: tokA });
+      assert.strictEqual(peersRes.status, 200);
+      assert.strictEqual(peersRes.data.ok, true);
+      assert(Array.isArray(peersRes.data.peers));
+
+      const dmRes = await httpRequest(mobilePortA, 'POST', '/api/conversations/dm', {
+        token: tokA,
+        body: { peerUuid: idB.uuid },
+      });
+      assert.strictEqual(dmRes.status, 200);
+      const parityConvId = dmRes.data.conversation.id;
+
+      const mkFolder = await httpRequest(mobilePortA, 'POST', '/api/vault/folder', {
+        token: tokA,
+        body: { parentPath: '', name: 'PortalParity' },
+      });
+      assert.strictEqual(mkFolder.status, 200);
+
+      const renameRes = await httpRequest(mobilePortA, 'POST', '/api/vault/rename', {
+        token: tokA,
+        body: { relPath: 'PortalParity', newName: 'PortalRenamed' },
+      });
+      assert.strictEqual(renameRes.status, 200);
+      assert.strictEqual(renameRes.data.node.rel_path, 'PortalRenamed');
+
+      const propsRes = await httpRequest(mobilePortA, 'GET', '/api/vault/properties?path=PortalRenamed', {
+        token: tokA,
+      });
+      assert.strictEqual(propsRes.status, 200);
+      assert.strictEqual(propsRes.data.node.rel_path, 'PortalRenamed');
+
+      const permRes = await httpRequest(mobilePortA, 'PUT', '/api/vault/permissions', {
+        token: tokA,
+        body: { relPath: 'PortalRenamed', permMode: 'private', password: 'initial-pw' },
+      });
+      assert.strictEqual(permRes.status, 200);
+      assert.strictEqual(permRes.data.node.perm_mode, 'private');
+
+      const recInfoRes = await httpRequest(mobilePortA, 'GET', '/api/vault/recovery-info?path=PortalRenamed', {
+        token: tokA,
+      });
+      assert.strictEqual(recInfoRes.status, 200);
+      assert.strictEqual(recInfoRes.data.securityQuestion, 'First pet?');
+
+      const recPwRes = await httpRequest(mobilePortA, 'POST', '/api/vault/recover-password', {
+        token: tokA,
+        body: {
+          relPath: 'PortalRenamed',
+          method: 'security_qa',
+          answerOrKey: 'Fluffy',
+          newPassword: 'updated-pw',
+        },
+      });
+      assert.strictEqual(recPwRes.status, 200);
+      assert.strictEqual(recPwRes.data.ok, true);
+
+      const chkShareRes = await httpRequest(mobilePortA, 'GET', '/api/chat/check-vault-share?path=PortalRenamed', {
+        token: tokA,
+      });
+      assert.strictEqual(chkShareRes.status, 200);
+      assert.strictEqual(chkShareRes.data.isProtected, true);
+
+      const shareRes = await httpRequest(mobilePortA, 'POST', '/api/chat/share-vault', {
+        token: tokA,
+        body: {
+          relPath: 'PortalRenamed',
+          conversationId: parityConvId,
+          mode: 'deeplink',
+          caption: 'Shared via REST parity',
+        },
+      });
+      assert.strictEqual(shareRes.status, 200);
+      assert.strictEqual(shareRes.data.message.type, 'vault_link');
+      assert.strictEqual(shareRes.data.message.vault_link_path, 'PortalRenamed');
+
+      const moveCopyRes = await httpRequest(mobilePortA, 'POST', '/api/vault/move-or-copy', {
+        token: tokA,
+        body: {
+          op: 'copy',
+          sourcePaths: ['PortalRenamed'],
+          targetParentPath: '',
+          conflictStrategy: 'keep_both',
+        },
+      });
+      assert.strictEqual(moveCopyRes.status, 200);
+      assert.strictEqual(moveCopyRes.data.ok, true);
+
+      const delRes = await httpRequest(mobilePortA, 'POST', '/api/vault/delete', {
+        token: tokA,
+        body: { relPath: 'PortalRenamed' },
+      });
+      assert.strictEqual(delRes.status, 200);
+      const deletedTrashId = delRes.data.trashItem.id;
+
+      const trashList1 = await httpRequest(mobilePortA, 'GET', '/api/trash', { token: tokA });
+      assert.strictEqual(trashList1.status, 200);
+      assert(trashList1.data.items.some((i) => i.id === deletedTrashId));
+
+      const restoreRes = await httpRequest(mobilePortA, 'POST', '/api/trash/restore', {
+        token: tokA,
+        body: { trashId: deletedTrashId },
+      });
+      assert.strictEqual(restoreRes.status, 200);
+      assert.strictEqual(restoreRes.data.ok, true);
+
+      const delAgain = await httpRequest(mobilePortA, 'POST', '/api/vault/delete', {
+        token: tokA,
+        body: { relPath: 'PortalRenamed' },
+      });
+      assert.strictEqual(delAgain.status, 200);
+      const purgeTrashId = delAgain.data.trashItem.id;
+
+      const purgeRes = await httpRequest(mobilePortA, 'DELETE', `/api/trash/${encodeURIComponent(purgeTrashId)}`, {
+        token: tokA,
+      });
+      assert.strictEqual(purgeRes.status, 200);
+      assert.strictEqual(purgeRes.data.ok, true);
+
+      const trashList2 = await httpRequest(mobilePortA, 'GET', '/api/trash', { token: tokA });
+      assert.strictEqual(trashList2.status, 200);
+      assert(!trashList2.data.items.some((i) => i.id === purgeTrashId));
+    });
+
+    // -------------------------------------------------------------------------
+    // 22. networkHealth.js & Static Integrity Assertions (Portal, Filters, Zero Footprint)
+    // -------------------------------------------------------------------------
+    await runStep('22. networkHealth.js Checks & Static UI/Zero-Footprint Integrity Assertions', async () => {
+      assert.strictEqual(
+        formatRuleList(['Rule One', { name: 'Rule Two' }]),
+        'Rule One, Rule Two'
+      );
+
+      const health = await checkWindowsNetworkHealth({ exePath: process.execPath });
+      assert.strictEqual(health.ok, true);
+      assert.strictEqual(typeof health.supported, 'boolean');
+      assert(Array.isArray(health.publicProfiles));
+      assert(Array.isArray(health.missingFirewallRules));
+      if (process.platform !== 'win32') {
+        assert.strictEqual(health.supported, false);
+        assert.strictEqual(health.needsAction, false);
+      }
+
+      const emptyVault = createTempVault('nhEmpty');
+      try {
+        const probe = findCachedInstaller(emptyVault, '2.0.0');
+        assert.strictEqual(typeof probe.available, 'boolean');
+        const unitExe = path.join(emptyVault.vaultRoot, 'TwinSync-Pro-Setup-Unit.exe');
+        fs.writeFileSync(unitExe, 'MZ_UNIT_TEST_PAYLOAD');
+        const importedUnit = importInstallerFile(unitExe, emptyVault, '2.0.0');
+        assert.strictEqual(importedUnit.available, true);
+        assert.strictEqual(importedUnit.fileName, 'TwinSync-Pro-Setup-Unit.exe');
+      } finally {
+        fs.rmSync(emptyVault.vaultRoot, { recursive: true, force: true });
+      }
+
+      const fileManagerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'components', 'FileManager.jsx'), 'utf8');
+      assert(
+        /import\s*\{[^}]*\bcreatePortal\b[^}]*\}\s*from\s*['"]react-dom['"]/.test(fileManagerSrc),
+        'FileManager.jsx must import createPortal from react-dom'
+      );
+      assert(
+        fileManagerSrc.includes('createPortal(') && fileManagerSrc.includes('zIndex: 9999'),
+        'FileManager.jsx PresenceBadge must render tooltip via createPortal with fixed zIndex 9999'
+      );
+
+      const chatWorkspaceSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'components', 'ChatWorkspace.jsx'), 'utf8');
+      assert(
+        /onlineQuickPeers[\s\S]*p\.status\s*===\s*['"]online['"]/.test(chatWorkspaceSrc),
+        'ChatWorkspace.jsx must filter quick-start peers strip to online peers only'
+      );
+
+      const mobileJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'mobile', 'app.js'), 'utf8');
+      assert(
+        /renderQuickPeers[\s\S]*p\.status\s*===\s*['"]online['"]/.test(mobileJs),
+        'src/mobile/app.js renderQuickPeers must filter to online peers only'
+      );
+
+      const webBridgeSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'webBridge.js'), 'utf8');
+      const webAuthSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'components', 'WebPortalAuth.jsx'), 'utf8');
+      const i18nSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'i18n.js'), 'utf8');
+
+      for (const [label, content] of [
+        ['src/mobile/app.js', mobileJs],
+        ['src/renderer/webBridge.js', webBridgeSrc],
+        ['src/renderer/components/WebPortalAuth.jsx', webAuthSrc],
+      ]) {
+        assert(
+          !/\b(localStorage|sessionStorage)\b|document\.cookie/.test(content),
+          `${label} must have ZERO localStorage/sessionStorage/cookie usage`
+        );
+      }
+
+      assert(
+        webAuthSrc.includes('webSelectAccountHint') &&
+          (i18nSrc.match(/webSelectAccountHint\s*:/g) || []).length >= 2,
+        'WebPortalAuth.jsx and both AR/EN dicts in i18n.js must define webSelectAccountHint'
+      );
     });
 
     console.log(`\nALL ${passed} INTEGRATION TEST SUITES PASSED (100%)!`);

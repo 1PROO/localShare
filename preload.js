@@ -35,6 +35,15 @@ const api = {
   setSetting: (key, value) => ipcRenderer.invoke('app:setSetting', key, value),
   getAuditLogs: (filter) => ipcRenderer.invoke('app:getAuditLogs', filter),
   getPeers: () => ipcRenderer.invoke('app:getPeers'),
+  getNetworkInfo: () => ipcRenderer.invoke('app:getNetworkInfo'),
+  refreshDiscovery: () => ipcRenderer.invoke('app:refreshDiscovery'),
+  connectManualPeer: (address) => ipcRenderer.invoke('app:connectManualPeer', address),
+  removeManualPeer: (address) => ipcRenderer.invoke('app:removeManualPeer', address),
+  checkNetworkHealth: () => ipcRenderer.invoke('app:checkNetworkHealth'),
+  fixNetworkHealth: () => ipcRenderer.invoke('app:fixNetworkHealth'),
+  getInstallerInfo: () => ipcRenderer.invoke('app:getInstallerInfo'),
+  importInstallerExe: () => ipcRenderer.invoke('app:importInstallerExe'),
+  removeOfflinePeer: (uuid) => ipcRenderer.invoke('app:removeOfflinePeer', uuid),
 
   // Chat & Direct Attachments
   ensureDm: (peerUuid) => ipcRenderer.invoke('chat:ensureDm', peerUuid),

@@ -118,6 +118,9 @@
       groupChat: 'مجموعة',
       membersCount: 'أعضاء',
       folderLabel: 'مجلد',
+      fullDesktopUi: 'واجهة سطح المكتب الكاملة',
+      installerBannerTitle: 'تثبيت TwinSync Pro للويندوز (بدون إنترنت)',
+      installerDownloadShort: 'تنزيل (.exe)',
       securityQ1: 'ما اسم أول مدرسة التحقت بها؟',
       securityQ2: 'ما اسم مدينتك المفضلة؟',
       securityQ3: 'ما اسم صديق طفولتك المفضل؟',
@@ -239,6 +242,9 @@
       groupChat: 'Group',
       membersCount: 'members',
       folderLabel: 'Folder',
+      fullDesktopUi: 'Full Desktop UI',
+      installerBannerTitle: 'TwinSync Pro for Windows (Offline)',
+      installerDownloadShort: 'Download (.exe)',
       securityQ1: 'What is the name of your first school?',
       securityQ2: 'What is your favorite city?',
       securityQ3: 'What is your childhood best friend’s name?',
@@ -303,7 +309,8 @@
     recoveryInfo: null,
     recoveryMethod: 'security_qa',
     regAvatar: 'color:#4F46E5',
-    regHasPhoto: false
+    regHasPhoto: false,
+    installerInfo: null
   };
 
   function t(key) {
@@ -500,7 +507,10 @@
 
     // Portal Auth strings
     document.getElementById('portal-zero-badge').textContent = '🛡️ ' + t('zeroFootprint');
+    document.getElementById('portal-btn-desktop-ui').textContent = '🖥️ ' + t('fullDesktopUi');
+    document.getElementById('portal-btn-desktop-ui').title = t('fullDesktopUi');
     document.getElementById('portal-subtitle').textContent = t('portalSubtitle');
+    renderInstallerBanner();
     document.getElementById('auth-tab-login').textContent = t('tabLoginExisting');
     document.getElementById('auth-tab-register').textContent = t('tabCreateAccount');
     document.getElementById('portal-account-search').placeholder = t('searchAccounts');
@@ -540,6 +550,8 @@
     document.getElementById('rail-split').title = t('splitView');
     document.getElementById('btn-switch-top-label').textContent = t('switchAccount');
     document.getElementById('btn-switch-rail-label').textContent = t('switchAccount');
+    document.getElementById('btn-desktop-ui-label').textContent = t('fullDesktopUi');
+    document.getElementById('btn-desktop-ui').title = t('fullDesktopUi');
     document.getElementById('btn-switch-account-rail').title = t('switchAccount') + ' / ' + t('logout');
     document.getElementById('btn-switch-account-top').title = t('switchAccount') + ' / ' + t('logout');
     document.getElementById('btn-back-chats').textContent = backArrow;
@@ -688,6 +700,47 @@
 
     switchPortalAuthTab(authState.activeTab || 'login');
     loadAuthAccounts();
+    loadInstallerInfo();
+  }
+
+  function switchToDesktopUi() {
+    window.location.href = '/desktop/' + (
+      state.token
+        ? '?mode=' + encodeURIComponent(state.mode || 'portal') + '&token=' + encodeURIComponent(state.token)
+        : '?mode=portal'
+    );
+  }
+
+  function renderInstallerBanner() {
+    const banner = document.getElementById('portal-installer-banner');
+    if (!banner) return;
+    const info = authState.installerInfo;
+    if (!info || !info.available) {
+      banner.classList.add('hidden');
+      return;
+    }
+    document.getElementById('portal-installer-title').textContent = '💻 ' + t('installerBannerTitle');
+    const sizeText = info.size ? formatBytes(info.size) : '';
+    const verText = info.version ? 'v' + info.version : '';
+    document.getElementById('portal-installer-meta').textContent =
+      [info.fileName, verText, sizeText].filter(Boolean).join(' • ');
+    const dlLink = document.getElementById('portal-installer-dl');
+    dlLink.textContent = '⬇ ' + t('installerDownloadShort');
+    if (info.fileName) {
+      dlLink.setAttribute('download', info.fileName);
+    }
+    banner.classList.remove('hidden');
+  }
+
+  async function loadInstallerInfo() {
+    try {
+      const res = await fetch('/api/installer/info', { cache: 'no-store' });
+      const data = await res.json();
+      authState.installerInfo = data && data.ok ? data : null;
+    } catch (_) {
+      authState.installerInfo = null;
+    }
+    renderInstallerBanner();
   }
 
   function hidePortalAuthView() {
@@ -1290,7 +1343,7 @@
   function renderQuickPeers() {
     const strip = document.getElementById('quick-peers-strip');
     const myUuid = state.identity ? state.identity.uuid : '';
-    const peers = (state.peers || []).filter((p) => p.uuid !== myUuid);
+    const peers = (state.peers || []).filter((p) => p.uuid !== myUuid && p.status === 'online');
     if (peers.length === 0) {
       strip.classList.add('hidden');
       return;
@@ -1397,6 +1450,13 @@
 
   async function openConversation(convId) {
     state.activeConvId = convId;
+    if (!state.splitView && state.tab !== 'chats') {
+      switchTab('chats');
+    }
+    const threadActiveEl = document.getElementById('thread-active-content');
+    if (threadActiveEl) {
+      threadActiveEl.classList.remove('hidden');
+    }
     document.getElementById('tab-chats').classList.add('has-active-conv');
     renderConversations();
     updateThreadHeader();
@@ -2849,11 +2909,13 @@
     renderRegColorSwatches();
     updateRegAvatarPreview();
 
-    // Language & Theme toggles (both Top Bar and Portal Auth View)
+    // Language, Theme & UI Switch toggles (both Top Bar and Portal Auth View)
     document.getElementById('btn-lang').addEventListener('click', toggleLang);
     document.getElementById('portal-btn-lang').addEventListener('click', toggleLang);
     document.getElementById('btn-theme').addEventListener('click', toggleTheme);
     document.getElementById('portal-btn-theme').addEventListener('click', toggleTheme);
+    document.getElementById('portal-btn-desktop-ui').addEventListener('click', switchToDesktopUi);
+    document.getElementById('btn-desktop-ui').addEventListener('click', switchToDesktopUi);
 
     // Portal Auth tabs & controls
     document.getElementById('auth-tab-login').addEventListener('click', () => switchPortalAuthTab('login'));

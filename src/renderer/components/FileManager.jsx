@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Folder,
   FolderOpen,
@@ -174,14 +175,68 @@ function getParentRel(relPath) {
   return idx === -1 ? '' : clean.slice(0, idx);
 }
 
+function formatPresenceStrip(entries = [], t) {
+  if (!entries || entries.length === 0) return null;
+  const primary = entries.find((e) => e.mode === 'edit') || entries[0];
+  const name = primary.displayName || t('unknown');
+  const action = primary.mode === 'edit' ? t('vaultEditingNow') : t('vaultViewingNow');
+  const extra = entries.length > 1 ? ` (+${entries.length - 1})` : '';
+  return {
+    text: `${name} — ${action}${extra}`,
+    isEdit: primary.mode === 'edit'
+  };
+}
+
 function PresenceBadge({ entries = [], t }) {
+  const triggerRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ top: 0, left: 8, placeBelow: false });
+
+  const updateCoords = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const placeBelow = rect.top < 170;
+    const top = placeBelow ? rect.bottom + 8 : rect.top - 8;
+    const preferredLeft = rect.left + rect.width / 2 - 104;
+    const maxLeft = Math.max(8, window.innerWidth - 224);
+    const left = Math.min(Math.max(8, preferredLeft), maxLeft);
+    setCoords({ top, left, placeBelow });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    updateCoords();
+    const close = () => setOpen(false);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', updateCoords);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', updateCoords);
+    };
+  }, [open, updateCoords]);
+
   if (!entries || entries.length === 0) return null;
   const hasEditor = entries.some((e) => e.mode === 'edit');
 
+  const handleOpen = () => {
+    updateCoords();
+    setOpen(true);
+  };
+
   return (
-    <div className="relative group/presence shrink-0" onClick={(e) => e.stopPropagation()}>
+    <div
+      className="relative shrink-0"
+      onClick={(e) => e.stopPropagation()}
+      onMouseEnter={handleOpen}
+      onMouseLeave={() => setOpen(false)}
+    >
       <span
-        className={`w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center shadow-sm ring-2 ring-white dark:ring-slate-900 cursor-default ${
+        ref={triggerRef}
+        tabIndex={0}
+        onFocus={handleOpen}
+        onBlur={() => setOpen(false)}
+        className={`w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center shadow-sm ring-2 ring-white dark:ring-slate-900 cursor-default outline-none focus:ring-indigo-500 ${
           hasEditor
             ? 'bg-emerald-500 text-white'
             : 'bg-sky-500 text-white'
@@ -190,34 +245,48 @@ function PresenceBadge({ entries = [], t }) {
         {entries.length}
       </span>
 
-      <div className="hidden group-hover/presence:block absolute z-40 bottom-full mb-1.5 end-0 w-52 rounded-xl bg-slate-900 dark:bg-slate-800 text-white border border-slate-700 shadow-xl p-2.5 pointer-events-none">
-        <div className="text-[10px] font-bold text-slate-300 mb-1.5">
-          {t('vaultActiveUsers')}
-        </div>
-        <div className="space-y-1">
-          {entries.map((entry) => (
-            <div
-              key={`${entry.peerUuid}-${entry.mode}`}
-              className="flex items-center justify-between gap-2 text-[11px]"
-            >
-              <span className="truncate font-medium">
-                {entry.displayName || t('unknown')}
-              </span>
-              <span
-                className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
-                  entry.mode === 'edit'
-                    ? 'bg-emerald-500/25 text-emerald-300'
-                    : 'bg-sky-500/25 text-sky-300'
-                }`}
-              >
-                {entry.mode === 'edit'
-                  ? t('vaultEditingNow')
-                  : t('vaultViewingNow')}
-              </span>
+      {open &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              top: `${coords.top}px`,
+              left: `${coords.left}px`,
+              transform: coords.placeBelow ? 'none' : 'translateY(-100%)',
+              zIndex: 9999
+            }}
+            className="w-52 rounded-xl bg-slate-900 dark:bg-slate-800 text-white border border-slate-700 shadow-2xl p-2.5 pointer-events-none"
+          >
+            <div className="text-[10px] font-bold text-slate-300 mb-1.5">
+              {t('vaultActiveUsers')}
             </div>
-          ))}
-        </div>
-      </div>
+            <div className="space-y-1">
+              {entries.map((entry) => (
+                <div
+                  key={`${entry.peerUuid}-${entry.mode}`}
+                  className="flex items-center justify-between gap-2 text-[11px]"
+                >
+                  <span className="truncate font-medium">
+                    {entry.displayName || t('unknown')}
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
+                      entry.mode === 'edit'
+                        ? 'bg-emerald-500/25 text-emerald-300'
+                        : 'bg-sky-500/25 text-sky-300'
+                    }`}
+                  >
+                    {entry.mode === 'edit'
+                      ? t('vaultEditingNow')
+                      : t('vaultViewingNow')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
@@ -1151,13 +1220,16 @@ export default function FileManager({
     setOsDropActive(false);
     setDropTargetPath(null);
 
-    const osPaths = Array.from(e.dataTransfer?.files || [])
-      .map((f) => f.path)
-      .filter(Boolean);
+    const droppedFiles = Array.from(e.dataTransfer?.files || []);
+    const osPaths = droppedFiles.map((f) => f.path).filter(Boolean);
     if (osPaths.length > 0) {
       e.preventDefault();
       e.stopPropagation();
       await handleUploadOsPaths(osPaths, currentPath, 'prompt');
+    } else if (getApi()?.isWebClient && droppedFiles.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      await handleUploadOsPaths(droppedFiles, currentPath, 'prompt');
     }
   };
 
@@ -1181,11 +1253,12 @@ export default function FileManager({
       return;
     }
 
-    const osPaths = Array.from(e.dataTransfer?.files || [])
-      .map((f) => f.path)
-      .filter(Boolean);
+    const droppedFiles = Array.from(e.dataTransfer?.files || []);
+    const osPaths = droppedFiles.map((f) => f.path).filter(Boolean);
     if (osPaths.length > 0) {
       await handleUploadOsPaths(osPaths, targetFolderRelPath, 'prompt');
+    } else if (getApi()?.isWebClient && droppedFiles.length > 0) {
+      await handleUploadOsPaths(droppedFiles, targetFolderRelPath, 'prompt');
     }
   };
 
@@ -1220,8 +1293,8 @@ export default function FileManager({
       className="flex-1 min-w-0 h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden relative select-none"
     >
       {/* TOP WINDOWS 11 FLUENT EXPLORER TOOLBAR */}
-      <header className="px-3 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
-        <div className="flex flex-wrap items-center gap-1.5">
+      <header className="px-3 py-2.5 bg-white dark:bg-slate-900 border-b border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0 min-w-0">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
           <button
             type="button"
             onClick={() => {
@@ -1306,9 +1379,9 @@ export default function FileManager({
         </div>
 
         {/* Right Controls: Sort, View, Search, Preview Toggle */}
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 min-w-0 max-w-full">
           {/* Sort Selector */}
-          <div className="inline-flex items-center rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200/70 dark:border-slate-700/70 text-[11px]">
+          <div className="inline-flex flex-wrap items-center rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 border border-slate-200/70 dark:border-slate-700/70 text-[11px] max-w-full">
             {[
               { id: 'name', label: t('vaultSortName') },
               { id: 'size', label: t('vaultSortSize') },
@@ -1361,7 +1434,7 @@ export default function FileManager({
           </div>
 
           {/* Search */}
-          <div className="relative">
+          <div className="relative min-w-0 max-w-full">
             <Search
               className="w-3.5 h-3.5 text-slate-400 absolute start-2.5 top-1/2 -translate-y-1/2"
               strokeWidth={1.5}
@@ -1371,7 +1444,7 @@ export default function FileManager({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder={t('vaultSearchPlaceholder')}
-              className="w-40 sm:w-48 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 ps-8 pe-7 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+              className="w-36 sm:w-48 max-w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 ps-8 pe-7 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
             />
             {searchQuery && (
               <button
@@ -1574,6 +1647,7 @@ export default function FileManager({
                     node.perm_mode === 'custom'
                 );
                 const presEntries = localPresenceMap[node.rel_path] || [];
+                const presStrip = formatPresenceStrip(presEntries, t);
                 const isFolderDropTarget =
                   node.is_dir && dropTargetPath === node.rel_path;
 
@@ -1658,6 +1732,23 @@ export default function FileManager({
                       <div className="text-[10px] text-slate-400 mt-0.5 truncate">
                         {node.is_dir ? t('vaultFolderLabel') : formatBytes(node.size)}
                       </div>
+                      {presStrip && (
+                        <div
+                          title={presStrip.text}
+                          className={`mt-1 inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 rounded-full text-[10px] font-semibold truncate ${
+                            presStrip.isEdit
+                              ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-sky-50 dark:bg-sky-500/15 text-sky-700 dark:text-sky-300'
+                          }`}
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              presStrip.isEdit ? 'bg-emerald-500' : 'bg-sky-500'
+                            }`}
+                          />
+                          <span className="truncate">{presStrip.text}</span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -1693,6 +1784,7 @@ export default function FileManager({
                         node.perm_mode === 'custom'
                     );
                     const presEntries = localPresenceMap[node.rel_path] || [];
+                    const presStrip = formatPresenceStrip(presEntries, t);
                     const isFolderDropTarget =
                       node.is_dir && dropTargetPath === node.rel_path;
 
@@ -1756,9 +1848,28 @@ export default function FileManager({
                             >
                               <Icon className="w-4 h-4" strokeWidth={1.5} />
                             </div>
-                            <span className="font-semibold text-slate-900 dark:text-slate-100 truncate">
-                              {node.name}
-                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="font-semibold text-slate-900 dark:text-slate-100 truncate">
+                                {node.name}
+                              </div>
+                              {presStrip && (
+                                <div
+                                  title={presStrip.text}
+                                  className={`mt-0.5 inline-flex items-center gap-1 max-w-full px-1.5 py-0.5 rounded-full text-[10px] font-semibold truncate ${
+                                    presStrip.isEdit
+                                      ? 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                      : 'bg-sky-50 dark:bg-sky-500/15 text-sky-700 dark:text-sky-300'
+                                  }`}
+                                >
+                                  <span
+                                    className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                      presStrip.isEdit ? 'bg-emerald-500' : 'bg-sky-500'
+                                    }`}
+                                  />
+                                  <span className="truncate">{presStrip.text}</span>
+                                </div>
+                              )}
+                            </div>
                             {isProtected && (
                               <Lock
                                 className="w-3.5 h-3.5 text-amber-500 shrink-0"

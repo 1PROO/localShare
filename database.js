@@ -1204,6 +1204,13 @@ class TwinSyncDatabase {
     return this.db.prepare('SELECT * FROM peers WHERE uuid = ?').get(uuid) || null;
   }
 
+  deletePeer(uuid) {
+    const id = this.getIdentity();
+    if (!uuid || (id && id.uuid === uuid)) return false;
+    const info = this.db.prepare('DELETE FROM peers WHERE uuid = ?').run(String(uuid));
+    return Number(info?.changes || 0) > 0;
+  }
+
   // =========================================================================
   // Lamport Clock
   // =========================================================================

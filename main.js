@@ -16,6 +16,13 @@ const {
   sanitizeFileName
 } = require('./sandboxManager');
 const { MobileServer } = require('./mobileServer');
+const {
+  checkWindowsNetworkHealth,
+  fixWindowsNetworkHealth,
+  findCachedInstaller,
+  importInstallerFile
+} = require('./networkHealth');
+const { version: APP_VERSION } = require('./package.json');
 
 function resolveVaultPaths() {
   const customDir = process.env.TWINSYNC_VAULT_DIR || process.env.WORKMESH_VAULT_DIR;
@@ -32,7 +39,8 @@ function resolveVaultPaths() {
     trashDir: path.join(vaultRoot, '.trash'),
     chatBlobsDir: path.join(vaultRoot, '.chat_blobs'),
     metaDir: path.join(vaultRoot, '.meta'),
-    stagingDir: path.join(vaultRoot, '.meta', 'staging')
+    stagingDir: path.join(vaultRoot, '.meta', 'staging'),
+    installersDir: path.join(vaultRoot, '.installers')
   };
 }
 
@@ -50,6 +58,9 @@ function ensureVaultPaths(vaultPaths) {
   fs.mkdirSync(vaultPaths.chatBlobsDir, { recursive: true });
   fs.mkdirSync(vaultPaths.metaDir, { recursive: true });
   fs.mkdirSync(vaultPaths.stagingDir, { recursive: true });
+  if (vaultPaths.installersDir) {
+    fs.mkdirSync(vaultPaths.installersDir, { recursive: true });
+  }
 
   if (process.platform === 'win32') {
     if (!(process.env.TWINSYNC_VAULT_DIR || process.env.WORKMESH_VAULT_DIR)) {
@@ -58,6 +69,9 @@ function ensureVaultPaths(vaultPaths) {
     applyHiddenSystemAttribWin(vaultPaths.trashDir);
     applyHiddenSystemAttribWin(vaultPaths.chatBlobsDir);
     applyHiddenSystemAttribWin(vaultPaths.metaDir);
+    if (vaultPaths.installersDir) {
+      applyHiddenSystemAttribWin(vaultPaths.installersDir);
+    }
   }
 }
 
@@ -165,6 +179,14 @@ if (process.versions && process.versions.electron) {
       if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
         mainWindow.webContents.send(channel, payload);
       }
+    };
+
+    const broadcastUiEvent = (channel, payload) => {
+      if (channel === 'peers:changed' && meshNetwork && typeof meshNetwork.emit === 'function') {
+        meshNetwork.emit('peers:changed', db ? db.getPeers() : (payload || []));
+        return;
+      }
+      sendToRenderer(channel, payload);
     };
 
     const updateTrayMenu = () => {
@@ -397,6 +419,98 @@ if (process.versions && process.versions.electron) {
 
       ipcMain.handle('app:getPeers', wrapIpcHandler(() => {
         return sanitizePeersForDesktop(db.getPeers());
+      }));
+
+      ipcMain.handle('app:getNetworkInfo', wrapIpcHandler(() => {
+        return {
+          ok: true,
+          ...meshNetwork.getNetworkDiscoveryInfo()
+        };
+      }));
+
+      ipcMain.handle('app:refreshDiscovery', wrapIpcHandler(async () => {
+        meshNetwork.sendDiscoveryNow();
+        await meshNetwork.refreshTailscalePeers({ forceProbe: true });
+        return {
+          ok: true,
+          ...meshNetwork.getNetworkDiscoveryInfo(),
+          peers: sanitizePeersForDesktop(db.getPeers())
+        };
+      }));
+
+      ipcMain.handle('app:connectManualPeer', wrapIpcHandler(async (address) => {
+        const result = await meshNetwork.connectManualPeer(address);
+        return {
+          ...result,
+          peers: sanitizePeersForDesktop(db.getPeers())
+        };
+      }));
+
+      ipcMain.handle('app:removeManualPeer', wrapIpcHandler((address) => {
+        return meshNetwork.removeManualPeer(address);
+      }));
+
+      ipcMain.handle('app:checkNetworkHealth', wrapIpcHandler(async () => {
+        return checkWindowsNetworkHealth({ exePath: process.execPath });
+      }));
+
+      ipcMain.handle('app:fixNetworkHealth', wrapIpcHandler(async () => {
+        const health = await fixWindowsNetworkHealth({ exePath: process.execPath });
+        if (meshNetwork && typeof meshNetwork.sendDiscoveryNow === 'function') {
+          meshNetwork.sendDiscoveryNow();
+        }
+        return health;
+      }));
+
+      ipcMain.handle('app:getInstallerInfo', wrapIpcHandler(() => {
+        const info = findCachedInstaller(vaultPaths, APP_VERSION);
+        return {
+          ok: true,
+          available: Boolean(info.available),
+          fileName: info.fileName || '',
+          size: Number(info.size || 0),
+          version: info.version || APP_VERSION
+        };
+      }));
+
+      ipcMain.handle('app:importInstallerExe', wrapIpcHandler(async () => {
+        const res = await dialog.showOpenDialog(mainWindow, {
+          properties: ['openFile'],
+          filters: [{ name: 'Windows Installer (.exe)', extensions: ['exe'] }]
+        });
+        if (res.canceled || !res.filePaths?.length) {
+          return { ok: false, canceled: true };
+        }
+        const info = importInstallerFile(res.filePaths[0], vaultPaths, APP_VERSION);
+        return {
+          ok: true,
+          available: Boolean(info.available),
+          fileName: info.fileName || '',
+          size: Number(info.size || 0),
+          version: info.version || APP_VERSION
+        };
+      }));
+
+      ipcMain.handle('app:removeOfflinePeer', wrapIpcHandler((uuid) => {
+        const targetUuid = String(uuid || '').trim();
+        if (!targetUuid) {
+          return { ok: false, error: 'Peer uuid is required' };
+        }
+        const identity = db.getIdentity();
+        if (identity && targetUuid === identity.uuid) {
+          return { ok: false, error: 'Cannot remove local identity' };
+        }
+        if (meshNetwork && typeof meshNetwork._isPeerLiveOnline === 'function' && meshNetwork._isPeerLiveOnline(targetUuid)) {
+          return { ok: false, code: 'PEER_ONLINE', error: 'Cannot remove an online peer' };
+        }
+        const existing = db.getPeer(targetUuid);
+        if (existing && existing.status === 'online' && meshNetwork?.peerSockets?.has(targetUuid)) {
+          return { ok: false, code: 'PEER_ONLINE', error: 'Cannot remove an online peer' };
+        }
+        db.deletePeer(targetUuid);
+        const sanitized = sanitizePeersForDesktop(db.getPeers());
+        broadcastUiEvent('peers:changed', sanitized);
+        return { ok: true, peers: sanitized };
       }));
 
       // Chat & Direct Attachments

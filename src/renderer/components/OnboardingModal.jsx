@@ -401,8 +401,8 @@ export default function OnboardingModal({
           </div>
 
           {/* Display Name + Avatar */}
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-center">
-            <div>
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-4 items-center">
+            <div className="min-w-0">
               <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
                 <User className="w-3.5 h-3.5 text-indigo-500" strokeWidth={1.5} />
                 <span>{t('onboardingDisplayName')}</span>

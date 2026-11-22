@@ -176,6 +176,53 @@ html, body {
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
 
+.installer-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(14, 165, 233, 0.12));
+  border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.installer-banner-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.installer-banner-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.installer-banner-meta {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-desktop-ui {
+  gap: 5px;
+  padding: 0 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.desktop-ui-label {
+  display: none;
+}
+
+@media (min-width: 560px) {
+  .desktop-ui-label {
+    display: inline;
+  }
+}
+
 .auth-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -474,6 +521,12 @@ html, body {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1;
+}
+
+.brand-text {
+  min-width: 0;
+  flex: 1;
 }
 
 .brand-logo {
@@ -490,11 +543,17 @@ html, body {
   font-weight: 800;
   font-size: 15px;
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .brand-subtitle {
   font-size: 11px;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .top-actions {
@@ -578,7 +637,8 @@ html, body {
   display: flex;
 }
 
-#tab-chats:not(.has-active-conv) .thread-pane {
+#tab-chats:not(.has-active-conv) .thread-pane,
+#tab-chats:not(.has-active-conv) .thread-active-content {
   display: none;
 }
 
@@ -586,7 +646,8 @@ html, body {
   display: none;
 }
 
-#tab-chats.has-active-conv .thread-pane {
+#tab-chats.has-active-conv .thread-pane,
+#tab-chats.has-active-conv .thread-active-content {
   display: flex;
 }
 
@@ -1595,16 +1656,32 @@ html, body {
 }
 
 @media (max-width: 480px) {
+  .brand-wrap {
+    gap: 7px;
+  }
   .brand-title {
-    font-size: 14px;
+    font-size: 13.5px;
+  }
+  .brand-subtitle {
+    font-size: 10.5px;
   }
   .account-pill {
-    max-width: 96px;
+    max-width: 88px;
     padding: 3px 7px;
     font-size: 11px;
   }
   .top-bar {
     padding: 8px 10px;
+    gap: 6px;
+  }
+  .top-actions {
+    gap: 4px;
+  }
+  .top-bar .icon-btn {
+    min-width: 32px;
+    height: 32px;
+    padding: 0 6px;
+    font-size: 13px;
   }
 }
 

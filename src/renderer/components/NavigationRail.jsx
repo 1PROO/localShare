@@ -7,7 +7,9 @@ import {
   Trash2,
   Settings,
   Wifi,
-  WifiOff
+  WifiOff,
+  Download,
+  LogOut
 } from 'lucide-react';
 import { UserAvatar } from './OnboardingModal';
 import { TwinSyncLogo } from './TwinSyncLogo';
@@ -19,9 +21,14 @@ export default function NavigationRail({
   onToggleSplit,
   totalUnread = 0,
   identity,
-  onlinePeerCount = 0
+  onlinePeerCount = 0,
+  isWebClient = false,
+  installerInfo = null,
+  onLogout
 }) {
   const isOnline = onlinePeerCount > 0;
+  const api = window.twinsync || window.workmesh;
+  const downloadUrl = api?.getInstallerDownloadUrl?.() || '/api/installer/download';
 
   const navItems = [
     {
@@ -46,13 +53,17 @@ export default function NavigationRail({
       active: viewMode === 'split',
       onClick: onToggleSplit
     },
-    {
-      id: 'mobile',
-      label: t('navMobileLink'),
-      icon: QrCode,
-      active: viewMode === 'mobile',
-      onClick: () => onChangeView('mobile')
-    },
+    ...(!isWebClient
+      ? [
+          {
+            id: 'mobile',
+            label: t('navMobileLink'),
+            icon: QrCode,
+            active: viewMode === 'mobile',
+            onClick: () => onChangeView('mobile')
+          }
+        ]
+      : []),
     {
       id: 'trash',
       label: t('navTrash'),
@@ -102,8 +113,19 @@ export default function NavigationRail({
         })}
       </div>
 
-      {/* Bottom settings + network status + avatar */}
-      <div className="flex flex-col items-center gap-2.5 w-full px-2">
+      {/* Bottom installer download (Web), settings, network status, avatar, logout (Web) */}
+      <div className="flex flex-col items-center gap-2 w-full px-2">
+        {isWebClient && installerInfo?.available && (
+          <a
+            href={downloadUrl}
+            download={installerInfo.fileName || true}
+            title={t('installerDownloadBtn', 'Download TwinSync Pro for Windows (.exe)')}
+            className="w-12 h-10 rounded-xl flex items-center justify-center bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-500/15 dark:hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 border border-emerald-200/80 dark:border-emerald-500/30 shadow-xs transition"
+          >
+            <Download className="w-4 h-4" strokeWidth={1.75} />
+          </a>
+        )}
+
         {/* Network / Peer Status Indicator */}
         <div
           title={`${isOnline ? t('navNetworkOnline') : t('navNetworkOffline')} • ${t('navPeersOnline', { count: onlinePeerCount })}`}
@@ -156,6 +178,17 @@ export default function NavigationRail({
             }`}
           />
         </button>
+
+        {isWebClient && typeof onLogout === 'function' && (
+          <button
+            type="button"
+            onClick={onLogout}
+            title={`${t('webSwitchAccount', 'Switch Account')} / ${t('webLogout', 'Logout')}`}
+            className="w-12 h-10 rounded-xl flex items-center justify-center text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-500/15 transition"
+          >
+            <LogOut className="w-4 h-4" strokeWidth={1.75} />
+          </button>
+        )}
       </div>
     </aside>
   );
