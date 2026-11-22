@@ -183,6 +183,52 @@ function isPrivateLanIp(ip) {
   return false;
 }
 
+function isCgnatIp(ip) {
+  const parts = String(ip || '').split('.');
+  if (parts.length !== 4) return false;
+  if (Number(parts[0]) !== 100) return false;
+  const second = Number(parts[1]);
+  return second >= 64 && second <= 127;
+}
+
+function classifyAdapter(name, ip = '') {
+  const n = String(name || '');
+  const addr = String(ip || '');
+  if (/vmware|vmnet|virtualbox|vbox|vethernet|hyper-v|wsl|docker|br-|virbr|veth|podman|kube|cni|flannel|hamachi|npcap|loopback|teredo|isatap|bluetooth/i.test(n)) {
+    return { category: 'virtual', isVirtual: true, priority: 10 };
+  }
+  if (/tailscale|zerotier|wireguard|wg\d|utun|tun\d|openvpn|tap/i.test(n) || isCgnatIp(addr)) {
+    return { category: 'vpn', isVirtual: false, priority: 60 };
+  }
+  if (/ethernet|eth\d|enp|eno|ens|local area|كابل|إيثرنت/i.test(n)) {
+    return { category: 'ethernet', isVirtual: false, priority: isPrivateLanIp(addr) ? 110 : 75 };
+  }
+  if (/wi-?fi|wlan|wireless|wlp|wlo|واي\s*فاي/i.test(n)) {
+    return { category: 'wifi', isVirtual: false, priority: isPrivateLanIp(addr) ? 105 : 70 };
+  }
+  return { category: 'lan', isVirtual: false, priority: isPrivateLanIp(addr) ? 95 : 50 };
+}
+
+function normalizeAdapterPreferences(prefs) {
+  const src = prefs && typeof prefs === 'object' ? prefs : {};
+  const seen = new Set();
+  const hiddenAdapters = [];
+  if (Array.isArray(src.hiddenAdapters)) {
+    for (const item of src.hiddenAdapters) {
+      const s = String(item || '').trim();
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        hiddenAdapters.push(s);
+      }
+    }
+  }
+  return {
+    hideVirtualAdapters: src.hideVirtualAdapters !== false,
+    hiddenAdapters,
+    preferredAdapter: src.preferredAdapter ? String(src.preferredAdapter).trim() : ''
+  };
+}
+
 class MobileServer extends EventEmitter {
   constructor({ db, meshNetwork, sandboxManager, vaultPaths, port = 41236 }) {
     super();
@@ -1890,59 +1936,139 @@ class MobileServer extends EventEmitter {
     }
   }
 
+  getAdapterPreferences() {
+    let raw = null;
+    if (typeof this.db?.getSetting === 'function') {
+      try {
+        raw = this.db.getSetting('adapter_preferences', null);
+      } catch (_) {}
+    } else if (this._adapterPrefsFallback) {
+      raw = this._adapterPrefsFallback;
+    }
+    return normalizeAdapterPreferences(raw);
+  }
+
+  setAdapterPreferences(prefs = {}) {
+    const current = this.getAdapterPreferences();
+    const merged = normalizeAdapterPreferences({
+      ...current,
+      ...(prefs && typeof prefs === 'object' ? prefs : {})
+    });
+    if (typeof this.db?.setSetting === 'function') {
+      try {
+        this.db.setSetting('adapter_preferences', merged);
+      } catch (_) {}
+    }
+    this._adapterPrefsFallback = merged;
+    return merged;
+  }
+
   async getPairingInfo() {
+    const prefs = this.getAdapterPreferences();
+    const hiddenSet = new Set(prefs.hiddenAdapters);
     const ifaces = os.networkInterfaces();
-    const rawAdapters = [];
+    const ranked = [];
+
     for (const [name, list] of Object.entries(ifaces)) {
       if (!Array.isArray(list)) continue;
       for (const iface of list) {
         if (iface.family === 'IPv4' && !iface.internal && iface.address) {
-          rawAdapters.push({
+          const cls = classifyAdapter(name, iface.address);
+          const visible = !(prefs.hideVirtualAdapters && cls.isVirtual) && !hiddenSet.has(name);
+          const isPreferred = Boolean(prefs.preferredAdapter && name === prefs.preferredAdapter);
+          ranked.push({
             name,
             ip: iface.address,
-            isLan: isPrivateLanIp(iface.address)
+            category: cls.category,
+            isVirtual: cls.isVirtual,
+            priority: cls.priority,
+            isLan: isPrivateLanIp(iface.address),
+            visible,
+            isPreferred
           });
         }
       }
     }
 
-    rawAdapters.sort((a, b) => Number(b.isLan) - Number(a.isLan));
+    ranked.sort((a, b) => {
+      const prefDiff = Number(b.isPreferred) - Number(a.isPreferred);
+      if (prefDiff !== 0) return prefDiff;
+      const priDiff = b.priority - a.priority;
+      if (priDiff !== 0) return priDiff;
+      const nameDiff = a.name.localeCompare(b.name);
+      if (nameDiff !== 0) return nameDiff;
+      return a.ip.localeCompare(b.ip);
+    });
 
-    if (rawAdapters.length === 0) {
-      rawAdapters.push({
-        name: 'loopback',
-        ip: '127.0.0.1',
-        isLan: false
-      });
+    let visibleAdapters = ranked.filter((a) => a.visible);
+    if (visibleAdapters.length === 0) {
+      visibleAdapters = ranked.length > 0
+        ? [ranked[0]]
+        : [{
+            name: 'loopback',
+            ip: '127.0.0.1',
+            category: 'lan',
+            isVirtual: false,
+            isPreferred: false
+          }];
     }
 
-    const quickLinkAdapters = rawAdapters.map(({ name, ip }) => ({
-      name,
-      ip,
-      url: `http://${ip}:${this.actualPort}/?mode=linked&token=${this.sessionToken}`
+    const primaryName = visibleAdapters[0].name;
+    const primaryIp = visibleAdapters[0].ip;
+
+    const allAdapters = ranked.map((a) => ({
+      name: a.name,
+      ip: a.ip,
+      category: a.category,
+      isVirtual: a.isVirtual,
+      visible: a.visible,
+      isPreferred: a.isPreferred,
+      isPrimary: a.name === primaryName && a.ip === primaryIp
     }));
 
-    const portalAdapters = rawAdapters.map(({ name, ip }) => ({
-      name,
-      ip,
-      url: `http://${ip}:${this.actualPort}/?mode=portal`
+    const qrOpts = {
+      width: 280,
+      margin: 2,
+      color: { dark: '#0f172a', light: '#ffffff' }
+    };
+
+    const quickLinkBase = visibleAdapters.map((a, idx) => ({
+      name: a.name,
+      ip: a.ip,
+      url: `http://${a.ip}:${this.actualPort}/?mode=linked&token=${this.sessionToken}`,
+      category: a.category,
+      isVirtual: a.isVirtual,
+      isPrimary: idx === 0
+    }));
+
+    const portalBase = visibleAdapters.map((a, idx) => ({
+      name: a.name,
+      ip: a.ip,
+      url: `http://${a.ip}:${this.actualPort}/?mode=portal`,
+      category: a.category,
+      isVirtual: a.isVirtual,
+      isPrimary: idx === 0
+    }));
+
+    const [quickQrs, portalQrs] = await Promise.all([
+      Promise.all(quickLinkBase.map((item) => QRCode.toDataURL(item.url, qrOpts))),
+      Promise.all(portalBase.map((item) => QRCode.toDataURL(item.url, qrOpts)))
+    ]);
+
+    const quickLinkAdapters = quickLinkBase.map((item, idx) => ({
+      ...item,
+      qrDataUrl: quickQrs[idx]
+    }));
+
+    const portalAdapters = portalBase.map((item, idx) => ({
+      ...item,
+      qrDataUrl: portalQrs[idx]
     }));
 
     const quickLinkPrimaryUrl = quickLinkAdapters[0].url;
+    const quickLinkQrDataUrl = quickLinkAdapters[0].qrDataUrl;
     const portalPrimaryUrl = portalAdapters[0].url;
-
-    const [quickLinkQrDataUrl, portalQrDataUrl] = await Promise.all([
-      QRCode.toDataURL(quickLinkPrimaryUrl, {
-        width: 280,
-        margin: 2,
-        color: { dark: '#0f172a', light: '#ffffff' }
-      }),
-      QRCode.toDataURL(portalPrimaryUrl, {
-        width: 280,
-        margin: 2,
-        color: { dark: '#0f172a', light: '#ffffff' }
-      })
-    ]);
+    const portalQrDataUrl = portalAdapters[0].qrDataUrl;
 
     return {
       ok: true,
@@ -1960,7 +2086,9 @@ class MobileServer extends EventEmitter {
         primaryUrl: portalPrimaryUrl,
         qrDataUrl: portalQrDataUrl,
         adapters: portalAdapters
-      }
+      },
+      allAdapters,
+      preferences: prefs
     };
   }
 
@@ -1980,5 +2108,6 @@ class MobileServer extends EventEmitter {
 }
 
 module.exports = {
-  MobileServer
+  MobileServer,
+  classifyAdapter
 };

@@ -874,6 +874,11 @@ if (process.versions && process.versions.electron) {
       ipcMain.handle('mobile:rotateToken', wrapIpcHandler(() => {
         return mobileServer.rotateToken();
       }));
+
+      ipcMain.handle('mobile:setAdapterPreferences', wrapIpcHandler(async (prefs) => {
+        mobileServer.setAdapterPreferences(prefs || {});
+        return await mobileServer.getPairingInfo();
+      }));
     };
 
     const wireEngineEvents = () => {

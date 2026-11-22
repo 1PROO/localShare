@@ -98,6 +98,7 @@ const api = {
   // Mobile Companion
   mobileGetPairing: () => ipcRenderer.invoke('mobile:getPairing'),
   mobileRotateToken: () => ipcRenderer.invoke('mobile:rotateToken'),
+  mobileSetAdapterPreferences: (prefs) => ipcRenderer.invoke('mobile:setAdapterPreferences', prefs),
 
   // Push events from main process
   onEvent: (eventName, cb) => {

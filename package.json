@@ -1,6 +1,6 @@
 {
   "name": "twinsync-pro",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "TwinSync Pro - Offline-first P2P LAN distributed workspace for team chat and controlled file collaboration",
   "author": "Ahmed Akram <ahmedakram19@gmail.com>",
   "main": "main.js",

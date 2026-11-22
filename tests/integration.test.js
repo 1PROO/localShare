@@ -12,12 +12,14 @@ const WebSocket = require('ws');
 const { TwinSyncDatabase } = require('../database');
 const { MeshNetwork, parseManualPeerEntry } = require('../meshNetwork');
 const { SandboxManager } = require('../sandboxManager');
-const { MobileServer } = require('../mobileServer');
+const { MobileServer, classifyAdapter } = require('../mobileServer');
 const {
   checkWindowsNetworkHealth,
   findCachedInstaller,
   importInstallerFile,
   formatRuleList,
+  isVirtualAdapterName,
+  parseRegistryFirewallRules,
 } = require('../networkHealth');
 
 const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -2140,6 +2142,157 @@ async function runTests() {
           (i18nSrc.match(/webSelectAccountHint\s*:/g) || []).length >= 2,
         'WebPortalAuth.jsx and both AR/EN dicts in i18n.js must define webSelectAccountHint'
       );
+    });
+
+    // -------------------------------------------------------------------------
+    // 23. Adapter Ranking, Per-Adapter QR, Preferences Persistence & Windows Registry FW Parser
+    // -------------------------------------------------------------------------
+    await runStep('23. Adapter Classification, Per-Adapter QRs, Preferences & Win32 Registry FW Parser', async () => {
+      // 1. Adapter classification & ranking priority
+      const clsEth = classifyAdapter('Ethernet', '192.168.1.50');
+      const clsWifi = classifyAdapter('Wi-Fi', '192.168.1.21');
+      const clsTs = classifyAdapter('Tailscale', '100.98.94.55');
+      const clsVm1 = classifyAdapter('VMware Network Adapter VMnet1', '192.168.211.1');
+      const clsVm8 = classifyAdapter('VMware Network Adapter VMnet8', '192.168.28.1');
+
+      assert.strictEqual(clsEth.category, 'ethernet');
+      assert.strictEqual(clsEth.isVirtual, false);
+      assert.strictEqual(clsWifi.category, 'wifi');
+      assert.strictEqual(clsWifi.isVirtual, false);
+      assert.strictEqual(clsTs.category, 'vpn');
+      assert.strictEqual(clsTs.isVirtual, false);
+      assert.strictEqual(clsVm1.category, 'virtual');
+      assert.strictEqual(clsVm1.isVirtual, true);
+      assert.strictEqual(clsVm8.category, 'virtual');
+      assert.strictEqual(clsVm8.isVirtual, true);
+      assert(clsEth.priority > clsTs.priority && clsWifi.priority > clsTs.priority);
+      assert(clsTs.priority > clsVm1.priority && clsTs.priority > clsVm8.priority);
+
+      // 2. Real getPairingInfo() per-adapter QRs & preferences persistence in dbA
+      const initialPairing = await mobileA.getPairingInfo();
+      assert.strictEqual(initialPairing.ok, true);
+      assert.strictEqual(initialPairing.preferences.hideVirtualAdapters, true);
+      assert(Array.isArray(initialPairing.allAdapters));
+      assert(initialPairing.quickLink.adapters.length >= 1);
+      assert(initialPairing.portal.adapters.length >= 1);
+
+      for (const item of initialPairing.quickLink.adapters) {
+        assert(item.qrDataUrl.startsWith('data:image/png;base64,'), 'QuickLink adapter must have qrDataUrl');
+        assert.strictEqual(typeof item.category, 'string');
+        assert.strictEqual(typeof item.isVirtual, 'boolean');
+        assert.strictEqual(typeof item.isPrimary, 'boolean');
+      }
+      for (const item of initialPairing.portal.adapters) {
+        assert(item.qrDataUrl.startsWith('data:image/png;base64,'), 'Portal adapter must have qrDataUrl');
+        assert(!item.url.includes('token='), 'Portal adapter URL must omit token');
+      }
+
+      const savedPrefs = mobileA.setAdapterPreferences({
+        hideVirtualAdapters: false,
+        hiddenAdapters: ['test-hide'],
+        preferredAdapter: 'test-pref',
+      });
+      assert.strictEqual(savedPrefs.hideVirtualAdapters, false);
+      assert.deepStrictEqual(savedPrefs.hiddenAdapters, ['test-hide']);
+      assert.strictEqual(savedPrefs.preferredAdapter, 'test-pref');
+
+      const dbStored = dbA.getSetting('adapter_preferences', null);
+      assert.deepStrictEqual(dbStored, {
+        hideVirtualAdapters: false,
+        hiddenAdapters: ['test-hide'],
+        preferredAdapter: 'test-pref',
+      });
+
+      const updatedPairing = await mobileA.getPairingInfo();
+      assert.deepStrictEqual(updatedPairing.preferences, dbStored);
+
+      // 3. Multi-adapter ranking, virtual hiding & preferredAdapter pinning via mocked networkInterfaces
+      const origNetIfaces = os.networkInterfaces;
+      try {
+        os.networkInterfaces = () => ({
+          'VMware Network Adapter VMnet1': [
+            { family: 'IPv4', internal: false, address: '192.168.211.1' },
+          ],
+          'VMware Network Adapter VMnet8': [
+            { family: 'IPv4', internal: false, address: '192.168.28.1' },
+          ],
+          Tailscale: [
+            { family: 'IPv4', internal: false, address: '100.98.94.55' },
+          ],
+          'Wi-Fi': [
+            { family: 'IPv4', internal: false, address: '192.168.1.21' },
+          ],
+          Ethernet: [
+            { family: 'IPv4', internal: false, address: '192.168.1.50' },
+          ],
+        });
+
+        mobileA.setAdapterPreferences({
+          hideVirtualAdapters: true,
+          hiddenAdapters: [],
+          preferredAdapter: '',
+        });
+        const rankedPairing = await mobileA.getPairingInfo();
+        const visibleNames = rankedPairing.quickLink.adapters.map((a) => a.name);
+        assert.deepStrictEqual(visibleNames, ['Ethernet', 'Wi-Fi', 'Tailscale']);
+        assert(rankedPairing.primaryUrl.includes('192.168.1.50'));
+        assert(rankedPairing.portal.primaryUrl.includes('192.168.1.50'));
+        assert.strictEqual(rankedPairing.allAdapters.length, 5);
+        assert.strictEqual(
+          rankedPairing.allAdapters.find((a) => a.name === 'VMware Network Adapter VMnet1').visible,
+          false
+        );
+
+        // Pin Wi-Fi as default primary adapter and unhide virtual adapters
+        mobileA.setAdapterPreferences({
+          hideVirtualAdapters: false,
+          hiddenAdapters: ['Tailscale'],
+          preferredAdapter: 'Wi-Fi',
+        });
+        const pinnedPairing = await mobileA.getPairingInfo();
+        const pinnedNames = pinnedPairing.quickLink.adapters.map((a) => a.name);
+        assert.strictEqual(pinnedNames[0], 'Wi-Fi');
+        assert(pinnedPairing.primaryUrl.includes('192.168.1.21'));
+        assert(pinnedPairing.portal.primaryUrl.includes('192.168.1.21'));
+        assert(pinnedNames.includes('VMware Network Adapter VMnet1'));
+        assert(!pinnedNames.includes('Tailscale'));
+        assert.strictEqual(pinnedPairing.quickLink.adapters[0].isPrimary, true);
+        assert(pinnedPairing.quickLink.adapters.every((a) => a.qrDataUrl.startsWith('data:image/png;base64,')));
+        assert(pinnedPairing.portal.adapters.every((a) => a.qrDataUrl.startsWith('data:image/png;base64,')));
+      } finally {
+        os.networkInterfaces = origNetIfaces;
+        mobileA.setAdapterPreferences({
+          hideVirtualAdapters: true,
+          hiddenAdapters: [],
+          preferredAdapter: '',
+        });
+      }
+
+      // 4. networkHealth.js virtual adapter detection & Windows Registry firewall parser
+      assert.strictEqual(isVirtualAdapterName('VMware Network Adapter VMnet1'), true);
+      assert.strictEqual(isVirtualAdapterName('vEthernet (WSL)'), true);
+      assert.strictEqual(isVirtualAdapterName('docker0'), true);
+      assert.strictEqual(isVirtualAdapterName('Wi-Fi'), false);
+      assert.strictEqual(isVirtualAdapterName('Ethernet'), false);
+
+      const expectedRules = [
+        'TwinSync Pro LAN',
+        'TwinSync Pro Mesh TCP 41235',
+        'TwinSync Pro Portal TCP 41236',
+        'TwinSync Pro Discovery UDP 41234',
+      ];
+      const regSamples = [
+        'v2.31|Action=Allow|Active=TRUE|Dir=In|App=C:\\Program Files\\TwinSync Pro\\TwinSync Pro.exe|Name=TwinSync Pro LAN|',
+        'v2.31|Action=Allow|Active=TRUE|Dir=In|Protocol=6|LPort=41235|Name=TwinSync Pro Mesh TCP 41235|',
+        'v2.31|Action=Allow|Active=FALSE|Dir=In|Protocol=6|LPort=41236|Name=TwinSync Pro Portal TCP 41236|',
+        'v2.31|Action=Block|Active=TRUE|Dir=In|Protocol=17|LPort=41234|Name=TwinSync Pro Discovery UDP 41234|',
+        'v2.31|Action=Allow|Active=TRUE|Dir=Out|Protocol=17|LPort=41234|Name=TwinSync Pro Discovery UDP 41234|',
+      ];
+      const matchedSet = parseRegistryFirewallRules(regSamples, expectedRules);
+      assert.strictEqual(matchedSet.has('TwinSync Pro LAN'), true);
+      assert.strictEqual(matchedSet.has('TwinSync Pro Mesh TCP 41235'), true);
+      assert.strictEqual(matchedSet.has('TwinSync Pro Portal TCP 41236'), false, 'Inactive rule must NOT match');
+      assert.strictEqual(matchedSet.has('TwinSync Pro Discovery UDP 41234'), false, 'Block or Dir=Out must NOT match');
     });
 
     console.log(`\nALL ${passed} INTEGRATION TEST SUITES PASSED (100%)!`);

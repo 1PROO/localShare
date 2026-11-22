@@ -733,7 +733,11 @@ export default function App() {
         )}
 
         {!isWebClient && viewMode === 'mobile' && (
-          <MobileLinkView t={t} onToast={showToast} />
+          <MobileLinkView
+            t={t}
+            onToast={showToast}
+            onOpenSettings={() => setViewMode('settings')}
+          />
         )}
 
         {viewMode === 'trash' && (

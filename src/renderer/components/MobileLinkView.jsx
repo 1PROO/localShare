@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   QrCode,
   Smartphone,
@@ -11,43 +11,250 @@ import {
   RotateCcw,
   AlertTriangle,
   Info,
-  KeyRound
+  KeyRound,
+  Cable,
+  Network,
+  Cpu,
+  SlidersHorizontal
 } from 'lucide-react';
 import { copyTextSafe } from './OnboardingModal';
 
-function normalizeUrlEntries(rawList, fallbackPrimaryUrl) {
-  const source = Array.isArray(rawList) && rawList.length > 0
-    ? rawList
-    : fallbackPrimaryUrl
-      ? [{ name: 'LAN', url: fallbackPrimaryUrl }]
-      : [];
+function normalizeUrlEntries(rawList, fallbackPrimaryUrl, fallbackQrDataUrl = '') {
+  const source =
+    Array.isArray(rawList) && rawList.length > 0
+      ? rawList
+      : fallbackPrimaryUrl
+        ? [{ name: 'LAN', url: fallbackPrimaryUrl, qrDataUrl: fallbackQrDataUrl, isPrimary: true }]
+        : [];
 
   return source
     .map((entry, idx) => {
       if (typeof entry === 'string') {
-        return { label: `LAN ${idx + 1}`, url: entry };
+        const name = `LAN ${idx + 1}`;
+        return {
+          key: `${name}||${idx}`,
+          label: name,
+          name,
+          ip: '',
+          url: entry,
+          qrDataUrl: idx === 0 ? fallbackQrDataUrl : '',
+          category: 'lan',
+          isVirtual: false,
+          isPrimary: idx === 0
+        };
       }
+      const name =
+        entry.name ||
+        entry.interface ||
+        entry.adapter ||
+        entry.address ||
+        entry.ip ||
+        `LAN ${idx + 1}`;
+      const ip = entry.ip || entry.address || '';
       return {
-        label:
-          entry.name ||
-          entry.interface ||
-          entry.adapter ||
-          entry.address ||
-          entry.ip ||
-          `LAN ${idx + 1}`,
-        url: entry.url || ''
+        key: `${name}|${ip}|${idx}`,
+        label: name,
+        name,
+        ip,
+        url: entry.url || '',
+        qrDataUrl: entry.qrDataUrl || (idx === 0 ? fallbackQrDataUrl : ''),
+        category: entry.category || (entry.isVirtual ? 'virtual' : 'lan'),
+        isVirtual: Boolean(entry.isVirtual),
+        isPrimary: entry.isPrimary !== undefined ? Boolean(entry.isPrimary) : idx === 0
       };
     })
     .filter((item) => Boolean(item.url));
 }
 
-export default function MobileLinkView({ t, onToast }) {
+function getCategoryMeta(category, t) {
+  switch (category) {
+    case 'ethernet':
+      return {
+        Icon: Cable,
+        label: t('mobileAdapterTypeEthernet', 'Ethernet Cable'),
+        badgeClass:
+          'bg-sky-100 dark:bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-200/70 dark:border-sky-500/25'
+      };
+    case 'wifi':
+      return {
+        Icon: Wifi,
+        label: t('mobileAdapterTypeWifi', 'Wi-Fi'),
+        badgeClass:
+          'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-500/25'
+      };
+    case 'vpn':
+      return {
+        Icon: Shield,
+        label: t('mobileAdapterTypeVpn', 'VPN'),
+        badgeClass:
+          'bg-violet-100 dark:bg-violet-500/15 text-violet-700 dark:text-violet-300 border border-violet-200/70 dark:border-violet-500/25'
+      };
+    case 'virtual':
+      return {
+        Icon: Cpu,
+        label: t('mobileAdapterTypeVirtual', 'Virtual'),
+        badgeClass:
+          'bg-amber-100 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-200/70 dark:border-amber-500/25'
+      };
+    default:
+      return {
+        Icon: Network,
+        label: t('mobileAdapterTypeLan', 'LAN'),
+        badgeClass:
+          'bg-slate-200/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300/60 dark:border-slate-700'
+      };
+  }
+}
+
+function AdapterLinksCard({
+  title,
+  items,
+  selectedKey,
+  onSelectKey,
+  onCopy,
+  copiedKey,
+  copyPrefix,
+  copyLabel,
+  accent = 'indigo',
+  onOpenSettings,
+  t
+}) {
+  const isEmerald = accent === 'emerald';
+
+  return (
+    <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white min-w-0">
+          <Wifi className="w-4 h-4 text-emerald-500 shrink-0" strokeWidth={1.5} />
+          <span className="truncate">{title}</span>
+        </div>
+
+        {typeof onOpenSettings === 'function' && (
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition shrink-0"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-500" strokeWidth={1.75} />
+            <span>{t('mobileManageAdaptersBtn', 'Manage Adapters')}</span>
+          </button>
+        )}
+      </div>
+
+      {items.length > 0 && (
+        <p className="text-[11px] text-slate-500 dark:text-slate-400">
+          {t('mobileSelectAdapterHint', 'Click any link below to display its QR code immediately')}
+        </p>
+      )}
+
+      {items.length === 0 ? (
+        <p className="text-xs text-slate-500 dark:text-slate-400 py-2">
+          {t('mobileNoAdapters')}
+        </p>
+      ) : (
+        <div className="space-y-2.5">
+          {items.map((item) => {
+            const isSelected = item.key === selectedKey;
+            const copyId = `${copyPrefix}-${item.key}`;
+            const cat = getCategoryMeta(item.category, t);
+            const CatIcon = cat.Icon;
+
+            return (
+              <div
+                key={item.key}
+                role="button"
+                tabIndex={0}
+                onClick={() => onSelectKey(item.key)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onSelectKey(item.key);
+                  }
+                }}
+                className={`min-w-0 rounded-xl border p-3 flex items-center justify-between gap-3 cursor-pointer transition ${
+                  isSelected
+                    ? isEmerald
+                      ? 'border-emerald-500 bg-emerald-50/75 dark:bg-emerald-500/15 ring-1 ring-emerald-500/30 shadow-xs'
+                      : 'border-indigo-500 bg-indigo-50/75 dark:bg-indigo-500/15 ring-1 ring-indigo-500/30 shadow-xs'
+                    : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 hover:border-slate-300 dark:hover:border-slate-700 hover:bg-slate-100/70 dark:hover:bg-slate-900'
+                }`}
+              >
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                    <span
+                      className={`text-xs font-bold truncate ${
+                        isSelected
+                          ? isEmerald
+                            ? 'text-emerald-800 dark:text-emerald-200'
+                            : 'text-indigo-800 dark:text-indigo-200'
+                          : 'text-slate-800 dark:text-slate-100'
+                      }`}
+                    >
+                      {item.name}
+                    </span>
+
+                    <span
+                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold shrink-0 ${cat.badgeClass}`}
+                    >
+                      <CatIcon className="w-3 h-3" strokeWidth={1.75} />
+                      <span>{cat.label}</span>
+                    </span>
+
+                    {isSelected && (
+                      <span
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                          isEmerald
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-indigo-600 text-white'
+                        }`}
+                      >
+                        <QrCode className="w-2.5 h-2.5" strokeWidth={2} />
+                        <span>{t('mobileActiveQrBadge', 'Active QR')} ✓</span>
+                      </span>
+                    )}
+                  </div>
+
+                  <div
+                    dir="ltr"
+                    className="text-xs font-mono text-slate-700 dark:text-slate-300 truncate select-all"
+                  >
+                    {item.url}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCopy(item.url, copyId);
+                  }}
+                  className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+                >
+                  {copiedKey === copyId ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-500" strokeWidth={1.5} />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  )}
+                  <span>{copiedKey === copyId ? t('copied') : copyLabel}</span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function MobileLinkView({ t, onToast, onOpenSettings }) {
   const [activeTab, setActiveTab] = useState('quickLink'); // 'quickLink' | 'portal'
   const [pairing, setPairing] = useState(null);
   const [loading, setLoading] = useState(true);
   const [rotating, setRotating] = useState(false);
   const [confirmRotate, setConfirmRotate] = useState(false);
   const [copiedKey, setCopiedKey] = useState(null);
+  const [selectedQuickKey, setSelectedQuickKey] = useState('');
+  const [selectedPortalKey, setSelectedPortalKey] = useState('');
 
   const loadPairing = useCallback(async () => {
     const api = window.twinsync || window.workmesh;
@@ -110,25 +317,75 @@ export default function MobileLinkView({ t, onToast }) {
   };
 
   // Tab 1: Quick Link data (?mode=linked&token=...)
-  const quickQrImage =
+  const fallbackQuickQr =
     pairing?.quickLink?.qrDataUrl ||
     pairing?.qrDataUrl ||
     pairing?.qr_data_url ||
     pairing?.qrCode ||
     '';
-  const quickUrls = normalizeUrlEntries(
-    pairing?.quickLink?.adapters || pairing?.adapters || pairing?.urls,
-    pairing?.quickLink?.primaryUrl || pairing?.primaryUrl
+  const fallbackQuickUrl = pairing?.quickLink?.primaryUrl || pairing?.primaryUrl || '';
+
+  const quickUrls = useMemo(
+    () =>
+      normalizeUrlEntries(
+        pairing?.quickLink?.adapters || pairing?.adapters || pairing?.urls,
+        fallbackQuickUrl,
+        fallbackQuickQr
+      ),
+    [pairing, fallbackQuickUrl, fallbackQuickQr]
   );
 
   // Tab 2: Universal Web & Mobile Portal data (?mode=portal, NO token)
-  const portalQrImage = pairing?.portal?.qrDataUrl || '';
-  const portalUrls = normalizeUrlEntries(
-    pairing?.portal?.adapters,
-    pairing?.portal?.primaryUrl
+  const fallbackPortalQr = pairing?.portal?.qrDataUrl || '';
+  const fallbackPortalUrl = pairing?.portal?.primaryUrl || '';
+
+  const portalUrls = useMemo(
+    () =>
+      normalizeUrlEntries(
+        pairing?.portal?.adapters,
+        fallbackPortalUrl,
+        fallbackPortalQr
+      ),
+    [pairing, fallbackPortalUrl, fallbackPortalQr]
   );
-  const portalPrimaryUrl =
-    pairing?.portal?.primaryUrl || portalUrls[0]?.url || '';
+
+  useEffect(() => {
+    if (quickUrls.length === 0) {
+      if (selectedQuickKey !== '') setSelectedQuickKey('');
+    } else if (!quickUrls.some((item) => item.key === selectedQuickKey)) {
+      const primary = quickUrls.find((item) => item.isPrimary) || quickUrls[0];
+      setSelectedQuickKey(primary.key);
+    }
+  }, [quickUrls, selectedQuickKey]);
+
+  useEffect(() => {
+    if (portalUrls.length === 0) {
+      if (selectedPortalKey !== '') setSelectedPortalKey('');
+    } else if (!portalUrls.some((item) => item.key === selectedPortalKey)) {
+      const primary = portalUrls.find((item) => item.isPrimary) || portalUrls[0];
+      setSelectedPortalKey(primary.key);
+    }
+  }, [portalUrls, selectedPortalKey]);
+
+  const activeQuickItem =
+    quickUrls.find((item) => item.key === selectedQuickKey) ||
+    quickUrls.find((item) => item.isPrimary) ||
+    quickUrls[0] ||
+    null;
+  const activeQuickQr = activeQuickItem?.qrDataUrl || fallbackQuickQr;
+  const activeQuickUrl = activeQuickItem?.url || fallbackQuickUrl;
+  const quickCat = activeQuickItem ? getCategoryMeta(activeQuickItem.category, t) : null;
+  const QuickCatIcon = quickCat?.Icon || Wifi;
+
+  const activePortalItem =
+    portalUrls.find((item) => item.key === selectedPortalKey) ||
+    portalUrls.find((item) => item.isPrimary) ||
+    portalUrls[0] ||
+    null;
+  const activePortalQr = activePortalItem?.qrDataUrl || fallbackPortalQr;
+  const activePortalUrl = activePortalItem?.url || fallbackPortalUrl;
+  const portalCat = activePortalItem ? getCategoryMeta(activePortalItem.category, t) : null;
+  const PortalCatIcon = portalCat?.Icon || Globe;
 
   return (
     <div className="flex-1 min-w-0 h-full flex flex-col bg-slate-50 dark:bg-slate-950 overflow-hidden">
@@ -230,15 +487,15 @@ export default function MobileLinkView({ t, onToast }) {
       <div className="flex-1 overflow-y-auto overflow-x-hidden p-6">
         {activeTab === 'quickLink' ? (
           /* TAB 1: Quick Link to This PC */
-          <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[330px_minmax(0,1fr)] gap-6 items-start">
+          <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[350px_minmax(0,1fr)] gap-6 items-start">
             {/* QR Card */}
             <div className="min-w-0 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 shadow-sm flex flex-col items-center text-center">
               <div className="w-60 h-60 rounded-2xl bg-white p-3 border border-slate-200 shadow-inner flex items-center justify-center">
                 {loading ? (
                   <RefreshCw className="w-7 h-7 animate-spin text-indigo-500" strokeWidth={1.5} />
-                ) : quickQrImage ? (
+                ) : activeQuickQr ? (
                   <img
-                    src={quickQrImage}
+                    src={activeQuickQr}
                     alt="Quick Link QR Code"
                     className="w-full h-full object-contain rounded-lg"
                   />
@@ -246,18 +503,56 @@ export default function MobileLinkView({ t, onToast }) {
                   <div className="text-xs text-slate-400 px-4">{t('mobileNoAdapters')}</div>
                 )}
               </div>
-              <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200">
+
+              {activeQuickItem && (
+                <div className="mt-3.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-indigo-50 dark:bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-500/30 max-w-full">
+                  <QuickCatIcon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
+                  <span className="truncate">
+                    {activeQuickItem.ip
+                      ? `${activeQuickItem.name} • ${activeQuickItem.ip}`
+                      : activeQuickItem.name}
+                  </span>
+                </div>
+              )}
+
+              <div className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200">
                 <Smartphone className="w-4 h-4 text-indigo-500" strokeWidth={1.5} />
                 <span>{t('mobileScanQr')}</span>
               </div>
-              <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+
+              {activeQuickUrl && (
+                <div className="w-full mt-3.5 pt-3.5 border-t border-slate-200/80 dark:border-slate-800 space-y-2 text-start">
+                  <div
+                    dir="ltr"
+                    className="w-full rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2 font-mono text-[11px] font-semibold text-slate-800 dark:text-indigo-300 text-center break-all select-all"
+                  >
+                    {activeQuickUrl}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyUrl(activeQuickUrl, 'quick-selected')}
+                    className="w-full inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition"
+                  >
+                    {copiedKey === 'quick-selected' ? (
+                      <Check className="w-3.5 h-3.5" strokeWidth={2} />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" strokeWidth={1.75} />
+                    )}
+                    <span>
+                      {copiedKey === 'quick-selected' ? t('copied') : t('mobileCopyUrl')}
+                    </span>
+                  </button>
+                </div>
+              )}
+
+              <p className="mt-3 text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                 {t('mobileQuickLinkDesc')}
               </p>
               <button
                 type="button"
                 onClick={() => setConfirmRotate(true)}
                 disabled={rotating}
-                className="mt-4 w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-amber-50 hover:bg-amber-100 dark:bg-amber-500/15 dark:hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-200/80 dark:border-amber-500/30 transition disabled:opacity-60"
+                className="mt-3 w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-amber-50 hover:bg-amber-100 dark:bg-amber-500/15 dark:hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-200/80 dark:border-amber-500/30 transition disabled:opacity-60"
               >
                 <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.5} />
                 <span>{t('mobileRotateToken')}</span>
@@ -266,54 +561,19 @@ export default function MobileLinkView({ t, onToast }) {
 
             {/* URLs & Instructions */}
             <div className="min-w-0 space-y-5">
-              <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
-                <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
-                  <Wifi className="w-4 h-4 text-emerald-500" strokeWidth={1.5} />
-                  <span>{t('mobileUrlsTitle')}</span>
-                </div>
-
-                {quickUrls.length === 0 ? (
-                  <p className="text-xs text-slate-500 dark:text-slate-400 py-2">
-                    {t('mobileNoAdapters')}
-                  </p>
-                ) : (
-                  <div className="space-y-2.5">
-                    {quickUrls.map((item, idx) => {
-                      const key = `quick-${idx}`;
-                      return (
-                        <div
-                          key={`${item.label}-${idx}`}
-                          className="min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 p-3 flex items-center justify-between gap-3"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">
-                              {item.label}
-                            </div>
-                            <div
-                              dir="ltr"
-                              className="text-xs font-mono text-slate-700 dark:text-slate-300 truncate select-all"
-                            >
-                              {item.url}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyUrl(item.url, key)}
-                            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
-                          >
-                            {copiedKey === key ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-500" strokeWidth={1.5} />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" strokeWidth={1.5} />
-                            )}
-                            <span>{copiedKey === key ? t('copied') : t('mobileCopyUrl')}</span>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
+              <AdapterLinksCard
+                title={t('mobileUrlsTitle')}
+                items={quickUrls}
+                selectedKey={activeQuickItem?.key || ''}
+                onSelectKey={setSelectedQuickKey}
+                onCopy={handleCopyUrl}
+                copiedKey={copiedKey}
+                copyPrefix="quick"
+                copyLabel={t('mobileCopyUrl')}
+                accent="indigo"
+                onOpenSettings={onOpenSettings}
+                t={t}
+              />
 
               {/* Instructions & Security Note */}
               <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
@@ -336,14 +596,14 @@ export default function MobileLinkView({ t, onToast }) {
         ) : (
           /* TAB 2: Universal Web & Mobile Portal */
           <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-6 items-start">
-            {/* Portal QR Card + Prominent Direct URL + Copy Link Button directly below QR */}
+            {/* Portal QR Card + Selected Adapter Direct URL + Copy Link Button directly below QR */}
             <div className="min-w-0 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-6 shadow-sm flex flex-col items-center text-center">
               <div className="w-60 h-60 rounded-2xl bg-white p-3 border border-slate-200 shadow-inner flex items-center justify-center">
                 {loading ? (
                   <RefreshCw className="w-7 h-7 animate-spin text-indigo-500" strokeWidth={1.5} />
-                ) : portalQrImage ? (
+                ) : activePortalQr ? (
                   <img
-                    src={portalQrImage}
+                    src={activePortalQr}
                     alt="Universal Portal QR Code"
                     className="w-full h-full object-contain rounded-lg"
                   />
@@ -352,7 +612,18 @@ export default function MobileLinkView({ t, onToast }) {
                 )}
               </div>
 
-              <div className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200">
+              {activePortalItem && (
+                <div className="mt-3.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-200/80 dark:border-emerald-500/30 max-w-full">
+                  <PortalCatIcon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.75} />
+                  <span className="truncate">
+                    {activePortalItem.ip
+                      ? `${activePortalItem.name} • ${activePortalItem.ip}`
+                      : activePortalItem.name}
+                  </span>
+                </div>
+              )}
+
+              <div className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200">
                 <Globe className="w-4 h-4 text-emerald-500" strokeWidth={1.5} />
                 <span>{t('mobilePortalScanOrOpen')}</span>
               </div>
@@ -362,17 +633,17 @@ export default function MobileLinkView({ t, onToast }) {
                 <div className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 text-center">
                   {t('mobilePortalDirectUrlLabel')}
                 </div>
-                {portalPrimaryUrl ? (
+                {activePortalUrl ? (
                   <>
                     <div
                       dir="ltr"
                       className="w-full rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 px-3 py-2.5 font-mono text-xs font-semibold text-slate-800 dark:text-emerald-300 text-center break-all select-all"
                     >
-                      {portalPrimaryUrl}
+                      {activePortalUrl}
                     </div>
                     <button
                       type="button"
-                      onClick={() => handleCopyUrl(portalPrimaryUrl, 'portal-primary')}
+                      onClick={() => handleCopyUrl(activePortalUrl, 'portal-primary')}
                       className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm transition"
                     >
                       {copiedKey === 'portal-primary' ? (
@@ -395,51 +666,21 @@ export default function MobileLinkView({ t, onToast }) {
               </div>
             </div>
 
-            {/* Adapter Portal URLs, Zero-Footprint Instructions & PIN Tip */}
+            {/* Adapter Portal URLs (ALWAYS shown), Zero-Footprint Instructions & PIN Tip */}
             <div className="min-w-0 space-y-5">
-              {portalUrls.length > 1 && (
-                <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">
-                  <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
-                    <Wifi className="w-4 h-4 text-emerald-500" strokeWidth={1.5} />
-                    <span>{t('mobilePortalAdaptersTitle')}</span>
-                  </div>
-                  <div className="space-y-2.5">
-                    {portalUrls.map((item, idx) => {
-                      const key = `portal-${idx}`;
-                      return (
-                        <div
-                          key={`${item.label}-${idx}`}
-                          className="min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/70 p-3 flex items-center justify-between gap-3"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">
-                              {item.label}
-                            </div>
-                            <div
-                              dir="ltr"
-                              className="text-xs font-mono text-slate-700 dark:text-slate-300 truncate select-all"
-                            >
-                              {item.url}
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyUrl(item.url, key)}
-                            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
-                          >
-                            {copiedKey === key ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-500" strokeWidth={1.5} />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" strokeWidth={1.5} />
-                            )}
-                            <span>{copiedKey === key ? t('copied') : t('mobileCopyLink')}</span>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              )}
+              <AdapterLinksCard
+                title={t('mobilePortalAdaptersTitle')}
+                items={portalUrls}
+                selectedKey={activePortalItem?.key || ''}
+                onSelectKey={setSelectedPortalKey}
+                onCopy={handleCopyUrl}
+                copiedKey={copiedKey}
+                copyPrefix="portal"
+                copyLabel={t('mobileCopyLink')}
+                accent="emerald"
+                onOpenSettings={onOpenSettings}
+                t={t}
+              />
 
               {/* Zero Footprint & Phone Camera Instructions */}
               <section className="min-w-0 overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 p-5 shadow-sm space-y-3">

@@ -323,12 +323,12 @@
           <div class="card">
             <div class="step-num">1</div>
             <h3 data-i18n="s1Title">انقل أو شارك Setup.exe عبر الراوتر</h3>
-            <p data-i18n="s1Desc">انسخ TwinSync-Pro-Setup-2.1.0.exe لأول جهاز (x64 و32-bit مدمجان)، وسيتم حفظ نسخة مخفية في .installers لتحميلها مباشرة من أي متصفح على نفس الراوتر.</p>
+            <p data-i18n="s1Desc">انسخ TwinSync-Pro-Setup-2.2.0.exe لأول جهاز (x64 و32-bit مدمجان)، وسيتم حفظ نسخة مخفية في .installers لتحميلها مباشرة من أي متصفح على نفس الراوتر.</p>
           </div>
           <div class="card">
             <div class="step-num">2</div>
             <h3 data-i18n="s2Title">تجهيز تلقائي للشبكة والجدار الناري</h3>
-            <p data-i18n="s2Desc">يُنشئ المعالج مجلد C:\ProgramData\TwinSync_Vault، ويفتح منافذ UDP 41234 وTCP 41235/41236، مع فحص ذكي لتحويل شبكات Public إلى Private بضغطة زر.</p>
+            <p data-i18n="s2Desc">يُنشئ المعالج مجلد C:\ProgramData\TwinSync_Vault، ويفتح منافذ UDP 41234 وTCP 41235/41236 على شبكات Wi-Fi وكابل Ethernet، مع فحص موثوق لغير المسؤولين وإصلاح بضغطة زر.</p>
           </div>
           <div class="card">
             <div class="step-num">3</div>
@@ -427,14 +427,14 @@
         f4Desc: 'احمِ حسابك برمز PIN للدخول والتجوال (PC Roaming) من أي متصفح أو جهاز آخر في الشبكة حتى عند إطفاء جهازك، مع صلاحيات هرمية واستعادة أوفلاين.',
         f5Title: 'سلة محذوفات معزولة ومؤشر المتواجدين',
         f5Desc: 'شارة حيّة وشريط حالة مباشر داخل البطاقات مع تلميح عائم ذكي (Portal Tooltip) لا يُقص، وحماية الملفات أثناء التعديل النشط، وسلة محذوفات لـ 30 يوماً.',
-        f6Title: 'نسخة الويب الكاملة والهاتف + التثبيت أوفلاين',
-        f6Desc: 'توجيه تلقائي لنسخة سطح المكتب الكاملة (/desktop/) على المتصفح أو واجهة الهاتف اللمسية، مع تحميل مثبّت الويندوز أوفلاين من البوابة مباشرة وخصوصية Zero Footprint.',
+        f6Title: 'نسخة الويب الكاملة وروابط QR التفاعلية',
+        f6Desc: 'توجيه تلقائي لنسخة سطح المكتب الكاملة (/desktop/) أو واجهة الهاتف، إخفاء كروت VMware/Docker الافتراضية تلقائياً، اختيار أي كرت شبكة (Wi-Fi/Ethernet) لتوليد رمز QR فوري، وتحميل Setup.exe أوفلاين.',
         installTitle: 'خطوات التثبيت على أجهزة بدون إنترنت',
         installSub: 'ثبّت البرنامج على أول جهاز فقط — وبقية أجهزة الشبكة تحمّله مباشرة عبر الراوتر من بوابة الويب أو عبر فلاشة USB.',
         s1Title: 'انقل أو شارك Setup.exe عبر الراوتر',
-        s1Desc: 'انسخ TwinSync-Pro-Setup-2.1.0.exe لأول جهاز (x64 و32-bit مدمجان)، وسيتم حفظ نسخة مخفية في .installers لتحميلها مباشرة من أي متصفح على نفس الراوتر.',
+        s1Desc: 'انسخ TwinSync-Pro-Setup-2.2.0.exe لأول جهاز (x64 و32-bit مدمجان)، وسيتم حفظ نسخة مخفية في .installers لتحميلها مباشرة من أي متصفح على نفس الراوتر.',
         s2Title: 'تجهيز تلقائي للشبكة والجدار الناري',
-        s2Desc: 'يُنشئ المعالج مجلد C:\\ProgramData\\TwinSync_Vault، ويفتح منافذ UDP 41234 وTCP 41235/41236، مع فحص ذكي لتحويل شبكات Public إلى Private بضغطة زر.',
+        s2Desc: 'يُنشئ المعالج مجلد C:\\ProgramData\\TwinSync_Vault، ويفتح منافذ UDP 41234 وTCP 41235/41236 على شبكات Wi-Fi وكابل Ethernet، مع فحص موثوق لغير المسؤولين وإصلاح بضغطة زر.',
         s3Title: 'ابدأ العمل والتجوال فوراً',
         s3Desc: 'أدخل اسم الجهاز واحفظ مفتاح الاسترداد (12 رمزاً) واضبط رمز PIN في الإعدادات للتجوال عبر بوابة الويب والهاتف الموحدة على نفس الشبكة.',
         win7NoteTitle: 'ملاحظة لأجهزة Windows 7 الخام بدون تحديثات:',
@@ -486,14 +486,14 @@
         f4Desc: 'Protect your PC account with a 4–6 digit PIN to roam into your exact chats & Vault ACLs from any LAN browser or workstation—even while your primary PC is offline.',
         f5Title: 'Isolated Trash & Live File Presence',
         f5Desc: 'Live inline status chips & unclipped Portal hover tooltip showing active viewers/editors, active-edit delete/rename guards, and 30-day isolated trash.',
-        f6Title: 'Full Desktop Web, Mobile & Offline Setup',
-        f6Desc: 'Smart auto-routing to Full Desktop Web (/desktop/) on PC browsers or touch Mobile PWA, direct offline Windows .exe download from portal, and Zero Footprint.',
+        f6Title: 'Full Desktop Web, Smart Adapter QR & Offline Setup',
+        f6Desc: 'Auto-routing to Full Desktop Web (/desktop/) or Mobile PWA, auto-hiding VMware/VirtualBox/Docker virtual adapters, click-to-QR per Wi-Fi/Ethernet link + Adapter Manager, and direct .exe download.',
         installTitle: 'How to Install on Offline Windows PCs',
         installSub: 'Install once on your first PC — teammates on the same router can download Setup.exe directly from the web portal or via USB.',
         s1Title: 'Share or Copy Setup.exe',
-        s1Desc: 'Install TwinSync-Pro-Setup-2.1.0.exe on Windows 7 SP1 or Windows 10/11 (x64 + x86). It auto-caches in .installers so LAN peers can download it straight from the browser.',
-        s2Title: 'Auto Firewall & Network Guard',
-        s2Desc: 'The wizard configures C:\\ProgramData\\TwinSync_Vault, opens UDP 41234 and TCP 41235/41236 firewall rules, and detects Public networks to switch to Private in one click.',
+        s1Desc: 'Install TwinSync-Pro-Setup-2.2.0.exe on Windows 7 SP1 or Windows 10/11 (x64 + x86). It auto-caches in .installers so LAN peers can download it straight from the browser.',
+        s2Title: 'Auto Firewall & Wi-Fi / Ethernet Guard',
+        s2Desc: 'Configures C:\\ProgramData\\TwinSync_Vault, opens UDP 41234 & TCP 41235/41236 across Wi-Fi and Ethernet Cable profiles, and detects/fixes Public profiles reliably even under non-admin accounts.',
         s3Title: 'Start & Roam Immediately',
         s3Desc: 'Set your display name, save your 12-char Master Recovery Key, and set an Account PIN in Settings to roam across the Unified Web & Mobile Portal.',
         win7NoteTitle: 'Note for bare Windows 7 installs without updates:',
@@ -578,7 +578,7 @@
 
       const validReleases = (releases || []).filter((r) => !r.draft);
       if (validReleases.length === 0) {
-        tagBadge.textContent = 'v2.0.0';
+        tagBadge.textContent = 'v2.2.0';
         statusNote.textContent = dict.buildingNote;
         listEl.innerHTML = `
           <div class="rel-item">
@@ -596,7 +596,7 @@
       const latestExe = pickExeAsset(latest);
       const latestSha = pickShaAsset(latest);
 
-      tagBadge.textContent = latest.tag_name || 'v2.0.0';
+      tagBadge.textContent = latest.tag_name || 'v2.2.0';
       dateEl.textContent = formatDate(latest.published_at || latest.created_at);
       statusNote.textContent = dict.syncingNote;
 

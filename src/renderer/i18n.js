@@ -436,7 +436,28 @@ export const translations = {
     webQuickLinkConnect: 'دخول بالرمز السريع',
     webSessionExpired: 'انتهت جلسة الدخول أو تم تدوير الرمز — يرجى تسجيل الدخول مجدداً',
     webDownloadOpenHint: 'يمكن تنزيل مثبّت Windows (.exe) مجاناً من هذا الجهاز المضيف عبر الشبكة المحلية',
-    webSelectAccountHint: 'اختر حسابك أعلاه لتسجيل الدخول'
+    webSelectAccountHint: 'اختر حسابك أعلاه لتسجيل الدخول',
+
+    // Adapters & Network Profiles (v2.2.0)
+    mobileSelectAdapterHint: 'اضغط على أي رابط أدناه لعرض رمز QR الخاص به فوراً',
+    mobileActiveQrBadge: 'QR نشط',
+    mobileManageAdaptersBtn: 'إدارة الشبكات',
+    mobileAdapterTypeEthernet: 'كابل LAN / Ethernet',
+    mobileAdapterTypeWifi: 'Wi-Fi',
+    mobileAdapterTypeVpn: 'VPN',
+    mobileAdapterTypeVirtual: 'افتراضي / Virtual',
+    mobileAdapterTypeLan: 'شبكة محلية LAN',
+    settingsAdaptersTitle: 'إدارة كروت الشبكة وروابط QR',
+    settingsAdaptersDesc: 'تحكم في كروت الشبكة الظاهرة في صفحة ربط الهاتف (إخفاء كروت VMware/VirtualBox/Docker الافتراضية تلقائياً وتثبيت الكرت الافتراضي مثل Wi-Fi أو كابل Ethernet).',
+    settingsHideVirtualAdapters: 'إخفاء الشبكات الافتراضية تلقائياً (VMware / VirtualBox / Docker)',
+    settingsHideVirtualAdaptersDesc: 'يبقي القائمة نظيفة على كروت Wi-Fi وكابل LAN وVPN الفعلية فقط.',
+    settingsAdapterPinDefault: 'تعيين كافتراضي',
+    settingsAdapterPinned: 'الكرت الافتراضي (QR)',
+    settingsAdapterVisible: 'ظاهر',
+    settingsAdapterHidden: 'مخفي',
+    settingsAdaptersSaved: 'تم حفظ إعدادات كروت الشبكة وتحديث روابط QR',
+    settingsNoAdaptersFound: 'لم يتم اكتشاف كروت شبكة IPv4 نشطة حالياً.',
+    netHealthActiveConnection: 'الاتصالات النشطة المكتشفة (Wi-Fi / Ethernet):'
   },
 
   en: {
@@ -876,7 +897,28 @@ export const translations = {
     webQuickLinkConnect: 'Connect with Token',
     webSessionExpired: 'Your session expired or was rotated — please sign in again',
     webDownloadOpenHint: 'Download the offline Windows installer (.exe) directly from this LAN host',
-    webSelectAccountHint: 'Select your account above to sign in'
+    webSelectAccountHint: 'Select your account above to sign in',
+
+    // Adapters & Network Profiles (v2.2.0)
+    mobileSelectAdapterHint: 'Click any link below to display its QR code immediately',
+    mobileActiveQrBadge: 'Active QR',
+    mobileManageAdaptersBtn: 'Manage Adapters',
+    mobileAdapterTypeEthernet: 'Ethernet Cable',
+    mobileAdapterTypeWifi: 'Wi-Fi',
+    mobileAdapterTypeVpn: 'VPN',
+    mobileAdapterTypeVirtual: 'Virtual',
+    mobileAdapterTypeLan: 'LAN',
+    settingsAdaptersTitle: 'Network Adapters & QR Links Management',
+    settingsAdaptersDesc: 'Control which network adapters appear in Mobile & Portal Link (auto-hide VMware/VirtualBox/Docker virtual adapters and pin your default Wi-Fi or Ethernet Cable QR link).',
+    settingsHideVirtualAdapters: 'Auto-hide virtual adapters (VMware / VirtualBox / Docker)',
+    settingsHideVirtualAdaptersDesc: 'Keeps QR links clean by showing physical Wi-Fi, Ethernet Cable, and VPN interfaces only.',
+    settingsAdapterPinDefault: 'Set Default',
+    settingsAdapterPinned: 'Default (Pinned)',
+    settingsAdapterVisible: 'Visible',
+    settingsAdapterHidden: 'Hidden',
+    settingsAdaptersSaved: 'Adapter preferences saved and QR links updated',
+    settingsNoAdaptersFound: 'No active IPv4 network adapters detected.',
+    netHealthActiveConnection: 'Detected active physical connections (Wi-Fi / Ethernet):'
   }
 };
 
